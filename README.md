@@ -4,7 +4,7 @@ Find dangling DNS records before an attacker does. Checks common subdomains for 
 classic subdomain-takeover precondition (a CNAME pointing at a deprovisioned/unclaimed
 cloud resource — S3, GitHub Pages, Heroku, Azure, Netlify, Fastly, etc.), plus a few
 other everyday DNS-hygiene issues: stale A records that no longer answer, dangling SPF
-`include:` domains, and wildcard DNS without a matching wildcard cert.
+`include:` domains, and wildcard DNS without a certificate that covers it.
 
 Goes beyond a DNS-only check: for claimable-service hostnames that *do* resolve at the
 DNS layer (many do, generically), it also does an HTTP-layer fingerprint check, because
@@ -21,7 +21,20 @@ DNS-over-HTTPS resolver (no local `dig`/`host` binary needed, no API key, no sig
 python3 dns_hygiene_checker.py example.com
 python3 dns_hygiene_checker.py example.com --subdomains www,mail,staging,old-blog
 python3 dns_hygiene_checker.py example.com --json
+python3 dns_hygiene_checker.py example.com --doh-url https://dns.google/resolve
 ```
+
+`--doh-url` picks any DNS-over-HTTPS endpoint that speaks the JSON API (default:
+Cloudflare's). Exit codes: `0` no FAIL findings, `1` at least one FAIL (takeover
+risk), `2` the resolver couldn't be queried, so the report is incomplete. Python 3.7+.
+
+What it flags, per record type:
+- CNAME whose target doesn't resolve (WARN; FAIL when the target is a claimable cloud
+  hostname), or that resolves to a platform page saying the hostname is unclaimed (FAIL)
+- A records where some or all addresses no longer answer on 80/443 (WARN)
+- SPF `include:` domains that don't exist, or exist without an SPF record (WARN)
+- wildcard DNS: checks the TLS certificate actually served for a made-up subdomain
+  (OK if it covers it, WARN if browsers would get a certificate error)
 
 ## Example output
 

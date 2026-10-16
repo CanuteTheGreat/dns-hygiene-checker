@@ -10,9 +10,10 @@ flags a few other everyday DNS-hygiene footguns:
   - CNAME points at a known "claimable" cloud hostname pattern (github.io, s3
     website endpoints, herokuapp.com, azurewebsites.net, fastly.net, etc.) with no
     A/AAAA behind it — these are the ones attackers scan for specifically
-  - Multiple A records where one no longer answers on port 80/443 (stale infra)
+  - A records where some or all addresses no longer answer on port 80/443 (stale infra)
+  - SPF "include:" domain that exists but publishes no SPF record (permerror)
   - SPF record referencing an "include:" domain that doesn't resolve
-  - Wildcard DNS present without a matching wildcard TLS cert (informational)
+  - Wildcard DNS present without a TLS cert that covers arbitrary subdomains
 
 Uses only the Python standard library (socket, ssl) plus DNS-over-HTTPS via Cloudflare's
 free public resolver (https://cloudflare-dns.com/dns-query) — no API key, no signup,
@@ -22,12 +23,19 @@ Usage:
     python3 dns_hygiene_checker.py example.com
     python3 dns_hygiene_checker.py example.com --subdomains www,mail,staging,old-blog
     python3 dns_hygiene_checker.py example.com --json
+    python3 dns_hygiene_checker.py example.com --doh-url https://dns.google/resolve
+
+Exit codes: 0 = no FAIL findings, 1 = at least one FAIL (takeover risk),
+2 = the DNS-over-HTTPS resolver could not be queried (report incomplete).
 """
 import argparse
 import json
+import os
 import socket
 import ssl
 import sys
+import re
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -75,7 +83,7 @@ UNCLAIMED_HTTP_SIGNATURES = {
 }
 
 
-def http_claim_check(host):
+def http_claim_check(host, ips=()):
     """Fetch a claimable-service hostname over HTTPS and look for an
     'unclaimed resource' fingerprint. Returns (is_unclaimed, detail) or
     (None, None) if the check is inconclusive (network error, no match rule)."""
@@ -87,17 +95,34 @@ def http_claim_check(host):
     if not sig:
         return None, None
     needle, expect_code = sig
-    req = urllib.request.Request(f"https://{host}/", headers={"User-Agent": "dns-hygiene-checker/1.0"})
+    if not ips:
+        return None, None
+    # Connect to the address the DoH lookup returned (the same view of DNS the
+    # rest of this report uses), with SNI + Host set to the platform hostname.
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
-            body = resp.read(4096).decode("utf-8", errors="replace").lower()
-            code = resp.status
-    except urllib.error.HTTPError as e:
-        body = e.read(4096).decode("utf-8", errors="replace").lower() if hasattr(e, "read") else ""
-        code = e.code
+        raw = socket.create_connection((ips[0], 443), timeout=8)
+        with ctx.wrap_socket(raw, server_hostname=host) as tls:
+            tls.sendall(f"GET / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: dns-hygiene-checker/1.0\r\n"
+                        "Accept: text/html\r\nConnection: close\r\n\r\n".encode())
+            data = b""
+            while len(data) < 16384:
+                try:
+                    chunk = tls.recv(4096)
+                except ssl.SSLError:
+                    # Many servers just close without a TLS close_notify; older
+                    # Pythons on OpenSSL 3 report that as a generic SSLError.
+                    if data:
+                        break
+                    raise
+                if not chunk:
+                    break
+                data += chunk
+        head, _, body = data.partition(b"\r\n\r\n")
+        code = int(head.split(b" ", 2)[1])
+        body = body.decode("utf-8", errors="replace").lower()
     except Exception:
         return None, None
     if needle in body:
@@ -107,14 +132,22 @@ def http_claim_check(host):
 
 
 
+# Resolver lookups that failed outright (network error, non-JSON answer, SERVFAIL).
+# A run where the resolver can't be reached must not look like a clean report.
+RESOLVER_FAILURES = []
+
+
 def doh_query(name, rtype, timeout=10):
-    url = f"{DOH_URL}?name={name}&type={rtype}"
+    url = f"{DOH_URL}?name={urllib.parse.quote(name)}&type={rtype}"
     req = urllib.request.Request(url, headers={"Accept": "application/dns-json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("resolver answer is not a JSON object")
         return data
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, socket.timeout):
+    except (urllib.error.URLError, TimeoutError, socket.timeout, ValueError, OSError) as e:
+        RESOLVER_FAILURES.append(f"{name}/{rtype}: {e}")
         return None
 
 
@@ -123,9 +156,18 @@ def get_records(name, rtype):
     if not data:
         return [], None
     status = data.get("Status")
+    if status == 2:  # SERVFAIL: the resolver couldn't get an answer, not "no record"
+        RESOLVER_FAILURES.append(f"{name}/{rtype}: SERVFAIL")
     answers = data.get("Answer", []) or []
     values = [a["data"] for a in answers if a.get("type") == {"A": 1, "AAAA": 28, "CNAME": 5, "TXT": 16, "MX": 15}.get(rtype)]
     return values, status
+
+
+def txt_value(data):
+    """Join a TXT record's character-strings: DoH returns '"v=spf1 a" " -all"' for a
+    record published as two strings, which DNS consumers concatenate."""
+    parts = re.findall(r'"((?:[^"\\]|\\.)*)"', data)
+    return "".join(parts) if parts else data
 
 
 def check_port_open(host, port, timeout=4):
@@ -160,7 +202,7 @@ def check_subdomain(sub, domain, findings):
                     if is_claimable else " — verify this CNAME target is still valid, or remove the record")
             findings.append((fqdn, level, f"CNAME -> {target} does NOT resolve{hint}"))
         elif is_claimable:
-            is_unclaimed, detail = http_claim_check(target)
+            is_unclaimed, detail = http_claim_check(target, target_a)
             if is_unclaimed:
                 findings.append((fqdn, "FAIL", f"CNAME -> {target} resolves at DNS but {detail} "
                                                 "— this IS an active subdomain-takeover opportunity, "
@@ -178,39 +220,82 @@ def check_subdomain(sub, domain, findings):
 
     elif a_vals:
         # subdomain has direct A records — check liveness on 80/443
-        live = any(check_port_open(ip, 443) or check_port_open(ip, 80) for ip in a_vals)
-        if live:
+        dead = [ip for ip in a_vals if not (check_port_open(ip, 443) or check_port_open(ip, 80))]
+        if not dead:
             findings.append((fqdn, "OK", f"A -> {', '.join(a_vals)} (responsive on 80/443)"))
-        else:
+        elif len(dead) == len(a_vals):
             findings.append((fqdn, "WARN", f"A -> {', '.join(a_vals)} but nothing answers on 80/443 "
                                             "— stale/dead record, low priority but worth pruning"))
+        else:
+            findings.append((fqdn, "WARN", f"A -> {', '.join(a_vals)}: {', '.join(dead)} does not answer on "
+                                            "80/443 while the others do — stale address left in the record "
+                                            "set, some visitors will get timeouts"))
 
 
 def check_spf_includes(domain, findings):
     txt_vals, _ = get_records(domain, "TXT")
-    spf = next((t.strip('"') for t in txt_vals if t.strip('"').lower().startswith("v=spf1")), None)
+    spf = next((v for v in (txt_value(t) for t in txt_vals) if v.lower().startswith("v=spf1")), None)
     if not spf:
         return
     for tok in spf.split():
-        if tok.lower().startswith("include:"):
-            inc_domain = tok.split(":", 1)[1]
+        if tok.lower().lstrip("+-~?").startswith("include:"):
+            inc_domain = tok.split(":", 1)[1].rstrip(".")
             vals, status = get_records(inc_domain, "TXT")
-            if status == 3 or (not vals and status != 0):
+            if status == 3:
                 findings.append(("SPF", "WARN",
                                   f"include:{inc_domain} does NOT resolve — dangling SPF include, "
                                   "an abandoned domain here could theoretically be re-registered "
                                   "and used to pass SPF for spoofed mail as if authorized by you"))
+            elif status == 0 and not any(txt_value(v).lower().startswith("v=spf1") for v in vals):
+                findings.append(("SPF", "WARN",
+                                  f"include:{inc_domain} exists but publishes no SPF record — receivers "
+                                  "treat this include as a permanent error (SPF permerror)"))
 
 
 def check_wildcard(domain, findings):
-    probe = f"__dnshygiene_wildcard_probe__.{domain}"
+    probe = f"dnshygiene-wildcard-probe-{os.getpid()}.{domain}"
     a_vals, status = get_records(probe, "A")
     cname_vals, _ = get_records(probe, "CNAME")
-    if a_vals or cname_vals:
+    if not (a_vals or cname_vals):
+        return
+    if not a_vals and cname_vals:
+        a_vals, _ = get_records(cname_vals[0].rstrip("."), "A")
+    verdict = wildcard_cert_verdict(probe, a_vals)
+    if verdict is True:
+        findings.append((domain, "OK", f"Wildcard DNS (*.{domain}) is configured and the TLS certificate "
+                                       "served for an arbitrary subdomain covers it"))
+    elif verdict is None:
         findings.append((domain, "INFO",
                           "Wildcard DNS (*.{}) appears to be configured — every made-up subdomain "
-                          "resolves. Not inherently wrong, but make sure your TLS cert covers "
-                          "wildcards too, or unexpected subdomains will show cert warnings.".format(domain)))
+                          "resolves, but nothing answered TLS on 443 to check the certificate. Make sure "
+                          "your TLS cert covers wildcards too, or unexpected subdomains will show cert "
+                          "warnings.".format(domain)))
+    else:
+        findings.append((domain, "WARN",
+                          f"Wildcard DNS (*.{domain}) is configured but the TLS certificate served for an "
+                          f"arbitrary subdomain does not cover it ({verdict}) — every made-up subdomain "
+                          "shows browsers a certificate error"))
+
+
+def wildcard_cert_verdict(probe, ips):
+    """True if the cert served on ips[0]:443 for SNI=probe is valid for probe, None if
+    nothing answers TLS there, else a short reason string."""
+    if not ips:
+        return None
+    try:
+        raw = socket.create_connection((ips[0], 443), timeout=6)
+    except OSError:
+        return None
+    ctx = ssl.create_default_context()
+    try:
+        with ctx.wrap_socket(raw, server_hostname=probe):
+            return True
+    except ssl.SSLCertVerificationError as e:
+        return getattr(e, "verify_message", None) or str(e)
+    except (ssl.SSLError, OSError) as e:
+        return f"TLS handshake failed: {e}"
+    finally:
+        raw.close()
 
 
 def audit(domain, subdomains, quiet=False):
@@ -222,7 +307,7 @@ def audit(domain, subdomains, quiet=False):
     check_spf_includes(domain, findings)
     check_wildcard(domain, findings)
 
-    if not findings:
+    if not findings and not RESOLVER_FAILURES:
         findings.append((domain, "INFO", "no subdomains from the checked list currently resolve — "
                                           "nothing to report (try --subdomains with your real list "
                                           "for a more complete picture)"))
@@ -236,27 +321,41 @@ def audit(domain, subdomains, quiet=False):
 
 
 def main():
+    global DOH_URL
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("domains", nargs="+", help="domain(s) to check, e.g. example.com")
     parser.add_argument("--subdomains", help="comma-separated list of subdomains to check "
                                               "instead of the built-in common list")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    parser.add_argument("--doh-url", default=DOH_URL,
+                        help="DNS-over-HTTPS JSON endpoint to query (default: %(default)s; "
+                             "e.g. https://dns.google/resolve)")
     args = parser.parse_args()
+    DOH_URL = args.doh_url
 
     subs = args.subdomains.split(",") if args.subdomains else COMMON_SUBDOMAINS
     subs = [s.strip() for s in subs if s.strip()]
 
     all_results = {}
+    resolver_failed = False
     for domain in args.domains:
         domain = domain.strip().replace("https://", "").replace("http://", "").rstrip("/")
+        del RESOLVER_FAILURES[:]
         findings = audit(domain, subs, quiet=args.json)
+        if RESOLVER_FAILURES:
+            resolver_failed = True
+            msg = (f"{len(RESOLVER_FAILURES)} DNS lookup(s) via {DOH_URL} failed, so this report is "
+                   f"INCOMPLETE (first: {RESOLVER_FAILURES[0]})")
+            findings.insert(0, (domain, "ERROR", msg))
+            if not args.json:
+                print(f"  [ERROR] {domain}: {msg}")
         all_results[domain] = [{"name": n, "level": l, "message": m} for n, l, m in findings]
 
     if args.json:
         print(json.dumps(all_results, indent=2))
 
     has_fail = any(f["level"] == "FAIL" for res in all_results.values() for f in res)
-    sys.exit(1 if has_fail else 0)
+    sys.exit(1 if has_fail else (2 if resolver_failed else 0))
 
 
 if __name__ == "__main__":

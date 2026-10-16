@@ -41,3 +41,7 @@ mail-security-auditor, aws-waste-finder, docker-baseline-auditor,
 nginx-config-auditor, cert-transparency-watcher, security-txt-auditor).
 
 Pay what you want (including $0) if it's useful: https://errant.solutions
+
+## License
+
+MIT — see LICENSE.

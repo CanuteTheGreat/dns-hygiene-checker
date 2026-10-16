@@ -1,3 +1,0 @@
-Add HTTP-layer check for claimable targets that DO resolve at DNS,
-since Heroku/Netlify/etc often resolve generically but return a
-platform "no such app/site" 404 page - the real takeover signal.

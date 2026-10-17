@@ -1,0 +1,237 @@
+{
+ "offline": false,
+ "optional_imports": [],
+ "hidden_options": [],
+ "claims": [
+  {
+   "id": "cname",
+   "text": "CNAME whose target doesn't resolve",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_dangling_cname_non_claimable",
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_dangling_cname_claimable_is_fail",
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_unclaimed_platform_fingerprint_is_fail",
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_claimed_platform_is_ok",
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_claimable_without_fingerprint_rule_is_info",
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_ownership_verifying_service_is_not_claimable",
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_suffixes_match_on_label_boundaries",
+    "tests/test_accuracy.py::TestAgainstCanITakeOverXyz::test_vulnerable_services_are_claimable",
+    "tests/test_accuracy.py::TestAgainstCanITakeOverXyz::test_not_vulnerable_services_are_not_claimable_and_are_named",
+    "tests/test_accuracy.py::TestAgainstCanITakeOverXyz::test_lists_are_disjoint_and_counted",
+    "tests/test_accuracy.py::TestAgainstCanITakeOverXyz::test_label_boundaries",
+    "tests/test_accuracy.py::TestAgainstCanITakeOverXyz::test_every_http_fingerprint_belongs_to_a_claimable_service"
+   ]
+  },
+  {
+   "id": "http-fingerprint",
+   "text": "for claimable-service hostnames that *do* resolve at the DNS layer",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_unclaimed_platform_fingerprint_is_fail",
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_claimed_platform_is_ok"
+   ]
+  },
+  {
+   "id": "ns",
+   "text": "NS delegations",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_dangling_ns_delegation"
+   ]
+  },
+  {
+   "id": "mx-srv",
+   "text": "MX",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_dangling_mx_and_srv"
+   ]
+  },
+  {
+   "id": "a-records",
+   "text": "A records where some or all addresses no longer answer on 80/443",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_live_a_record",
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_dead_a_record",
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_partly_dead_a_record_set"
+   ]
+  },
+  {
+   "id": "spf",
+   "text": "SPF `include:` domains that don't exist",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_spf_includes_across_split_txt_strings"
+   ]
+  },
+  {
+   "id": "wildcard",
+   "text": "wildcard DNS: checks the TLS certificate actually served for a made-up subdomain",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestWildcard::test_wildcard_with_covering_cert_ok",
+    "tests/test_dns_hygiene_checker.py::TestWildcard::test_wildcard_with_non_covering_cert_warns",
+    "tests/test_dns_hygiene_checker.py::TestWildcard::test_wildcard_without_tls_is_info",
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_no_wildcard_no_wildcard_finding"
+   ]
+  },
+  {
+   "id": "caa",
+   "text": "CAA",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_caa_and_dnssec_missing",
+    "tests/test_dns_hygiene_checker.py::TestApexAndDiscovery::test_caa_and_dnssec_present"
+   ]
+  },
+  {
+   "id": "dnssec",
+   "text": "DNSSEC",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_caa_and_dnssec_missing",
+    "tests/test_dns_hygiene_checker.py::TestApexAndDiscovery::test_caa_and_dnssec_present"
+   ]
+  },
+  {
+   "id": "apex-skip",
+   "text": "`--no-apex-checks` skips the MX/SRV/CAA/DNSSEC checks",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestApexAndDiscovery::test_zone_file_and_cloudflare"
+   ],
+   "flags": [
+    "--no-apex-checks"
+   ]
+  },
+  {
+   "id": "builtin-list",
+   "text": "the built-in list of ~33 common names",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestCli::test_default_subdomain_list"
+   ],
+   "flags": [
+    "--subdomains"
+   ]
+  },
+  {
+   "id": "ct",
+   "text": "`--ct` reads Certificate Transparency logs through crt.sh",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestApexAndDiscovery::test_ct_discovery",
+    "tests/test_dns_hygiene_checker.py::TestApexAndDiscovery::test_ct_falls_back_to_cert_spotter"
+   ],
+   "flags": [
+    "--ct"
+   ]
+  },
+  {
+   "id": "zone-file",
+   "text": "`--zone-file` reads owner names from a\nzone file",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestApexAndDiscovery::test_zone_file_and_cloudflare"
+   ],
+   "flags": [
+    "--zone-file"
+   ]
+  },
+  {
+   "id": "cloudflare",
+   "text": "`--cloudflare` lists every record in the domain's Cloudflare zone",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestApexAndDiscovery::test_zone_file_and_cloudflare"
+   ],
+   "flags": [
+    "--cloudflare"
+   ]
+  },
+  {
+   "id": "only-discovered",
+   "text": "`--only-discovered` drops the built-in list",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestApexAndDiscovery::test_zone_file_and_cloudflare",
+    "tests/test_dns_hygiene_checker.py::TestApexAndDiscovery::test_only_discovered_needs_a_source"
+   ],
+   "flags": [
+    "--only-discovered"
+   ]
+  },
+  {
+   "id": "doh-url",
+   "text": "`--doh-url` picks any DNS-over-HTTPS endpoint",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestCli::test_unreachable_resolver_is_error_not_clean",
+    "tests/test_dns_hygiene_checker.py::TestCli::test_servfail_is_error"
+   ],
+   "flags": [
+    "--doh-url"
+   ]
+  },
+  {
+   "id": "json",
+   "text": "dns-hygiene-checker example.com --json",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_fail_exit_code",
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_findings_sorted_by_severity"
+   ],
+   "flags": [
+    "--json"
+   ]
+  },
+  {
+   "id": "exit-codes",
+   "text": "Exit codes: `0` no FAIL findings",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_fail_exit_code",
+    "tests/test_dns_hygiene_checker.py::TestCli::test_text_output_and_clean_exit",
+    "tests/test_dns_hygiene_checker.py::TestCli::test_unreachable_resolver_is_error_not_clean",
+    "tests/test_dns_hygiene_checker.py::TestCli::test_servfail_is_error"
+   ]
+  },
+  {
+   "id": "stdlib-only",
+   "text": "Zero dependencies beyond the Python standard library",
+   "tests": [
+    "tests/test_claims.py::TestClaims::test_stdlib_only"
+   ]
+  },
+  {
+   "id": "install-pipx",
+   "text": "pipx install git+https://git.canutethegreat.com/CanuteTheGreat/dns-hygiene-checker.git",
+   "tests": [
+    "ci/install-channels.sh#pipx install -q \"git+$FORGEJO/CanuteTheGreat/$REPO.git\"",
+    ".forgejo/workflows/nightly.yml#ci/install-channels.sh"
+   ]
+  },
+  {
+   "id": "install-homebrew",
+   "text": "brew install canutethegreat/errant-tools/dns-hygiene-checker",
+   "tests": [
+    "repo:homebrew-errant-tools/Formula/dns-hygiene-checker.rb#test do",
+    "repo:homebrew-errant-tools/.forgejo/workflows/test.yml#ci/run-tests.sh"
+   ]
+  },
+  {
+   "id": "install-scoop",
+   "text": "scoop install errant-tools/dns-hygiene-checker",
+   "tests": [
+    "repo:scoop-errant-tools/bucket/dns-hygiene-checker.json#\"bin\"",
+    "repo:scoop-errant-tools/.forgejo/workflows/test.yml#ci/run-tests.sh"
+   ]
+  },
+  {
+   "id": "install-download",
+   "text": "https://errant.solutions/downloads/dns_hygiene_checker.py",
+   "tests": [
+    "ci/install-channels.sh#https://errant.solutions/downloads/$FILE"
+   ]
+  },
+  {
+   "id": "release-assets",
+   "text": "`SHA256SUMS` file",
+   "tests": [
+    "ci/install-channels.sh#sha256sum -c SHA256SUMS",
+    "ci/release.py#SHA256SUMS"
+   ]
+  },
+  {
+   "id": "python-versions",
+   "text": "Python 3.7+",
+   "tests": [
+    ".forgejo/workflows/test.yml#python: [\"3.7\"",
+    ".forgejo/workflows/nightly.yml#python: [\"3.7\""
+   ]
+  }
+ ]
+}

@@ -69,52 +69,76 @@ COMMON_SUBDOMAINS = [
     "old", "legacy", "demo", "vpn", "portal", "admin", "dashboard", "support",
 ]
 
-# Hostname suffixes known to be "claimable" — if a CNAME points here and the
-# target doesn't resolve, an attacker can often just sign up for that service
-# and claim the exact hostname to serve content under your domain.
+# Hostname suffixes of services where a dangling CNAME can be claimed by someone else (rated
+# "Vulnerable" or "Edge case" by the community list github.com/EdOverflow/can-i-take-over-xyz):
+# if a CNAME points here and the target is gone, an attacker can often just sign up for that
+# service and claim the exact hostname to serve content under your domain.
 CLAIMABLE_SUFFIXES = [
     ".github.io", ".herokuapp.com", ".herokudns.com", ".s3.amazonaws.com",
     ".s3-website", ".azurewebsites.net", ".azureedge.net", ".cloudapp.net",
-    ".fastly.net", ".netlify.app", ".surge.sh", ".readthedocs.io",
-    ".wordpress.com", ".shopify.com", ".myshopify.com", ".zendesk.com",
-    ".statuspage.io", ".trafficmanager.net", ".cloudfront.net", ".ghost.io",
-    ".pantheonsite.io", ".wpengine.com", ".unbouncepages.com",
+    ".netlify.app", ".surge.sh", ".readthedocs.io",
+    ".wordpress.com", ".shopify.com", ".myshopify.com",
+    ".trafficmanager.net", ".ghost.io",
+    ".pantheonsite.io",
     ".elasticbeanstalk.com", ".bitbucket.io", ".helpscoutdocs.com", ".helpjuice.com", ".webflow.io",
-    ".tumblr.com", ".uservoice.com", ".cargocollective.com", ".launchrock.com", ".teamwork.com",
-    ".strikinglydns.com", ".smartjobboard.com", ".agilecrm.com", ".freshdesk.com", ".gitbook.io",
+    ".tumblr.com", ".cargocollective.com", ".launchrock.com", ".teamwork.com",
+    ".strikinglydns.com", ".smartjobboard.com", ".agilecrm.com", ".gitbook.io",
     ".blob.core.windows.net", ".cloudapp.azure.com", ".azure-api.net", ".azurefd.net",
     ".azurecontainer.io", ".azurecr.io", ".azurehdinsight.net", ".redis.cache.windows.net",
-    ".servicebus.windows.net", ".search.windows.net", ".trafficmanager.net", ".vercel.app",
-    ".fly.dev", ".onrender.com", ".firebaseapp.com", ".web.app", ".pages.dev", ".workers.dev",
-    ".kinsta.cloud", ".ngrok.io", ".frontify.com", ".canny.io", ".simplebooklet.com",
+    ".servicebus.windows.net", ".search.windows.net", ".vercel.app",
+    ".onrender.com", ".pages.dev", ".workers.dev",
+    ".ngrok.io", ".frontify.com", ".canny.io", ".simplebooklet.com",
+    ".airee.ru", ".animaapp.io", ".trydiscourse.com", ".furyns.com", ".hatenablog.com", ".helprace.com",
+    ".youtrack.cloud", ".readme.io", ".surveysparrow.com", ".read.uberflip.com", ".stats.uptimerobot.com",
+    ".worksites.net",
 ]
+
+# Services the same list rates "Not vulnerable": they verify domain ownership, so nobody else can
+# claim the hostname. A dangling CNAME to them is still a broken record (WARN), not a takeover.
+VERIFIED_SERVICES = {
+    ".cloudfront.net": "CloudFront", ".fastly.net": "Fastly", ".firebaseapp.com": "Firebase", ".web.app": "Firebase",
+    ".fly.dev": "Fly.io", ".freshdesk.com": "Freshdesk", ".kinsta.cloud": "Kinsta", ".statuspage.io": "Statuspage",
+    ".unbouncepages.com": "Unbounce", ".uservoice.com": "UserVoice", ".wpengine.com": "WP Engine",
+    ".zendesk.com": "Zendesk", ".elb.amazonaws.com": "AWS ELB", ".squarespace.com": "Squarespace",
+    ".hubspot.net": "HubSpot", ".ghs.googlehosted.com": "Google Sites", ".storage.googleapis.com": "Google Cloud Storage",
+    ".gitlab.io": "GitLab Pages", ".akamaiedge.net": "Akamai", ".acquia-sites.com": "Acquia",
+}
+
+
+def suffix_match(host, suffixes):
+    """The suffix (from `suffixes`) `host` falls under, matched on label boundaries, or None.
+    ('.s3-website' also matches the regional s3-website-<region>.amazonaws.com forms.)"""
+    host = host.lower().rstrip(".")
+    for suf in suffixes:
+        bare = suf.lstrip(".")
+        if host == bare or host.endswith("." + bare):
+            return suf
+        if suf == ".s3-website" and ".s3-website" in "." + host:
+            return suf
+    return None
+
 
 # Fingerprint strings seen in the body of a claimable-but-unclaimed page for
 # platforms that resolve generically at the DNS layer but signal "not claimed"
 # only in the HTTP response body/status. Checking these turns a DNS-only false
 # negative (like Heroku, which resolves fine but 404s with "no such app") into
-# a real positive.
+# a real positive. Only claimable services are listed (see CLAIMABLE_SUFFIXES).
 UNCLAIMED_HTTP_SIGNATURES = {
     "herokuapp.com": ("no such app", 404),
     "herokudns.com": ("no such app", 404),
     "github.io": ("there isn't a github pages site here", 404),
     "netlify.app": ("not found - request id", 404),
     "surge.sh": ("project not found", 404),
-    "readthedocs.io": ("404 not found", 404),
-    "ghost.io": ("site not found", 404),
-    "pantheonsite.io": ("404 error", 404),
-    "wpengine.com": ("this site can", 404),
-    "statuspage.io": ("page not found", 404),
+    "readthedocs.io": ("the link you have followed or the url that you entered does not exist", 404),
+    "ghost.io": ("site unavailable", 404),
+    "pantheonsite.io": ("404 error unknown site!", 404),
     "azurewebsites.net": ("web app - error 404", 404),
     "trafficmanager.net": ("this domain is not configured", 404),
-    "unbouncepages.com": ("the requested url was not found", 404),
-    "zendesk.com": ("help center closed", 404),
     "bitbucket.io": ("repository not found", 404),
     "helpscoutdocs.com": ("no settings were found for this company", 404),
     "helpjuice.com": ("we could not find what you're looking for", 404),
     "webflow.io": ("the page you are looking for doesn't exist or has been moved", 404),
     "tumblr.com": ("whatever you were looking for doesn't currently exist at this address", 404),
-    "uservoice.com": ("this uservoice subdomain is currently available", 404),
     "launchrock.com": ("it looks like you may have taken a wrong turn somewhere", 404),
     "teamwork.com": ("oops - we didn't find your site", 404),
     "smartjobboard.com": ("this job board website is either expired or its domain name is invalid", 404),
@@ -122,9 +146,17 @@ UNCLAIMED_HTTP_SIGNATURES = {
     "strikinglydns.com": ("page not found - striking", 404),
     "canny.io": ("there is no such company", 404),
     "vercel.app": ("deployment_not_found", 404),
-    "onrender.com": ("not found", 404),
-    "fly.dev": ("404 not found", 404),
-    "ngrok.io": ("tunnel", 404),
+    "ngrok.io": ("not found", 404),
+    "wordpress.com": ("do you want to register", 404),
+    "animaapp.io": ("the page you were looking for does not exist", 404),
+    "furyns.com": ("404: this page could not be found", 404),
+    "hatenablog.com": ("404 blog is not found", 404),
+    "youtrack.cloud": ("is not a registered incloud youtrack", 404),
+    "readme.io": ("the creators of this project are still working on making everything perfect", 404),
+    "surveysparrow.com": ("account not found", 404),
+    "read.uberflip.com": ("the url you've accessed does not provide a hub", 404),
+    "stats.uptimerobot.com": ("page not found", 404),
+    "airee.ru": ("ошибка 402. сервис айри.рф не оплачен", 402),
 }
 
 
@@ -133,10 +165,9 @@ def http_claim_check(host, ips=()):
     'unclaimed resource' fingerprint. Returns (is_unclaimed, detail) or
     (None, None) if the check is inconclusive (network error, no match rule)."""
     sig = None
-    for suffix, (needle, code) in UNCLAIMED_HTTP_SIGNATURES.items():
-        if host.endswith(suffix):
-            sig = (needle, code)
-            break
+    suffix = suffix_match(host, list(UNCLAIMED_HTTP_SIGNATURES))
+    if suffix is not None:
+        sig = UNCLAIMED_HTTP_SIGNATURES[suffix]
     if not sig:
         return None, None
     needle, expect_code = sig
@@ -282,13 +313,16 @@ def check_subdomain(sub, domain, findings):
         # does the CNAME target itself resolve?
         target_a, target_status = get_records(target, "A")
         target_aaaa, _ = get_records(target, "AAAA")
-        is_claimable = any(target.endswith(suf.lstrip(".")) or suf.lstrip(".") in target for suf in CLAIMABLE_SUFFIXES)
+        is_claimable = suffix_match(target, CLAIMABLE_SUFFIXES) is not None
+        verified = VERIFIED_SERVICES.get(suffix_match(target, VERIFIED_SERVICES) or "")
 
         if not target_a and not target_aaaa:
             level = "FAIL" if is_claimable else "WARN"
             hint = (" — target hostname pattern matches a claimable cloud service; "
                     "this is the classic subdomain-takeover setup, verify and remove/fix ASAP"
-                    if is_claimable else " — verify this CNAME target is still valid, or remove the record")
+                    if is_claimable else
+                    f" — {verified} verifies domain ownership, so others can't claim it, but the record is broken"
+                    if verified else " — verify this CNAME target is still valid, or remove the record")
             findings.append((fqdn, level, f"CNAME -> {target} does NOT resolve{hint}"))
         elif is_claimable:
             is_unclaimed, detail = http_claim_check(target, target_a)

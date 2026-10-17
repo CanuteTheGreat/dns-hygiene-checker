@@ -53,8 +53,10 @@ risk), `2` the resolver or a discovery source couldn't be queried, so the report
 incomplete. Python 3.7+.
 
 What it flags:
-- CNAME whose target doesn't resolve (WARN; FAIL when the target is one of ~65 claimable
-  cloud hostname patterns), or that resolves to a platform page saying the hostname is
+- CNAME whose target doesn't resolve (WARN; FAIL when the target is one of 60 claimable
+  cloud hostname patterns (services rated takeover-able by
+  [can-i-take-over-xyz](https://github.com/EdOverflow/can-i-take-over-xyz); ones that verify
+  domain ownership, e.g. CloudFront or Fastly, stay WARN)), or that resolves to a platform page saying the hostname is
   unclaimed (FAIL; ~30 HTTP fingerprints)
 - **NS delegations** whose nameserver hostnames don't resolve (FAIL when none do: whoever
   registers that nameserver's domain controls the subdomain)

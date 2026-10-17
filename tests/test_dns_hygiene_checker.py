@@ -42,6 +42,13 @@ ZONE = {
     ("my-app.herokuapp.com", "A"): [LIVE],
     ("cdn.hyg.test", "CNAME"): ["d111abc.cloudfront.net."],
     ("d111abc.cloudfront.net", "A"): [LIVE],
+    # claimable service with no HTTP fingerprint rule, live: INFO
+    ("files.hyg.test", "CNAME"): ["hygfiles.blob.core.windows.net."],
+    ("hygfiles.blob.core.windows.net", "A"): [LIVE],
+    # CloudFront verifies domain ownership (can-i-take-over-xyz: not vulnerable): dangling = WARN, not FAIL
+    ("oldcdn.hyg.test", "CNAME"): ["d999gone.cloudfront.net."],
+    # suffixes match on label boundaries: notgithub.io is not GitHub Pages
+    ("lookalike.hyg.test", "CNAME"): ["pages.notgithub.io."],
     ("blog.hyg.test", "CNAME"): ["hyg-blog.example.org."],
     ("hyg-blog.example.org", "A"): [LIVE],
     # SPF published as two character-strings; the includes span both
@@ -178,7 +185,7 @@ def leaf(name, san):
 
 
 def setUpModule():
-    global TMP, CA, CA_KEY, DOH, DOH_URL, HTTPS
+    global TMP, CA, CA_KEY, DOH, DOH_URL, HTTPS, DISC
     TMP = tempfile.mkdtemp()
     CA, CA_KEY = os.path.join(TMP, "ca.pem"), os.path.join(TMP, "ca.key")
     openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", CA_KEY, "-out", CA, "-days", "2",
@@ -211,8 +218,10 @@ def setUpModule():
 
 
 def tearDownModule():
-    DOH.shutdown()
-    HTTPS.shutdown()
+    # close the listening sockets too: mutation testing runs the suite several times in one process
+    for srv in (DOH, HTTPS, DISC):
+        srv.shutdown()
+        srv.server_close()
     shutil.rmtree(TMP, ignore_errors=True)
 
 
@@ -229,7 +238,8 @@ def by_name(results, domain):
     return out
 
 
-SUBS = "www,dead,mixed,gone,bucket,takeover,claimed,cdn,blog,doesnotexist,retired-zone,half,mail2"
+SUBS = ("www,dead,mixed,gone,bucket,takeover,claimed,cdn,blog,doesnotexist,retired-zone,half,mail2,"
+        "files,oldcdn,lookalike")
 
 
 class TestChecks(unittest.TestCase):
@@ -275,7 +285,19 @@ class TestChecks(unittest.TestCase):
         self.assertIn("HTTP 200", msg)
 
     def test_claimable_without_fingerprint_rule_is_info(self):
-        self.assertIn("claimable cloud service pattern", self.one("cdn.hyg.test", "INFO"))
+        self.assertIn("claimable cloud service pattern", self.one("files.hyg.test", "INFO"))
+
+    def test_ownership_verifying_service_is_not_claimable(self):
+        # CloudFront is "Not vulnerable" on can-i-take-over-xyz: live is a plain OK, dangling a WARN
+        self.assertIn("resolves fine", self.one("cdn.hyg.test", "OK"))
+        msg = self.one("oldcdn.hyg.test", "WARN")
+        self.assertIn("CloudFront verifies domain ownership", msg)
+        self.assertNotIn("subdomain-takeover", msg)
+
+    def test_suffixes_match_on_label_boundaries(self):
+        msg = self.one("lookalike.hyg.test", "WARN")
+        self.assertIn("pages.notgithub.io does NOT resolve", msg)
+        self.assertNotIn("claimable", msg)
 
     def test_plain_cname_ok(self):
         self.assertIn("resolves fine", self.one("blog.hyg.test", "OK"))

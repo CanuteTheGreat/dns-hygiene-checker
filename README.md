@@ -19,7 +19,7 @@ DNS-over-HTTPS resolver (no local `dig`/`host` binary needed, no API key, no sig
 
 ```sh
 pipx install git+https://git.canutethegreat.com/CanuteTheGreat/dns-hygiene-checker.git        # latest release branch; puts `dns-hygiene-checker` on PATH
-pipx install git+https://git.canutethegreat.com/CanuteTheGreat/dns-hygiene-checker.git@v1.2.0  # a pinned release
+pipx install git+https://git.canutethegreat.com/CanuteTheGreat/dns-hygiene-checker.git@v1.2.1  # a pinned release
 brew install canutethegreat/errant-tools/dns-hygiene-checker   # after: brew tap canutethegreat/errant-tools https://git.canutethegreat.com/CanuteTheGreat/homebrew-errant-tools
 scoop install errant-tools/dns-hygiene-checker                 # after: scoop bucket add errant-tools https://git.canutethegreat.com/CanuteTheGreat/scoop-errant-tools
 ```

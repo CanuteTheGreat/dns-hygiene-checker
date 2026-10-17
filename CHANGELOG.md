@@ -2,6 +2,14 @@
 
 All notable changes. Versions are git tags; each tag has a Forgejo release with checksums.
 
+## 1.2.1 - 2026-10-17
+
+- Takeover verdicts follow can-i-take-over-xyz: a dangling CNAME to a service that verifies domain
+  ownership before attaching a custom domain (CloudFront, Fastly, Firebase, Fly.io, Statuspage, Zendesk,
+  WP Engine, Unbounce, UserVoice, Kinsta, Freshdesk) is a WARN, not a FAIL "takeover"; claimable
+  suffixes match on label boundaries (`x.mygithub.io` no longer counts as GitHub Pages).
+- Tests: accuracy suite against that list, mutation testing (nightly), claims ledger.
+
 ## 1.2.0 - 2026-10-16
 
 - **Subdomain discovery**: `--ct` (Certificate Transparency via crt.sh, Cert Spotter fallback), `--zone-file`

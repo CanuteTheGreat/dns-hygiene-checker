@@ -41,7 +41,7 @@ Usage:
 Exit codes: 0 = no FAIL findings, 1 = at least one FAIL (takeover risk),
 2 = the DNS-over-HTTPS resolver could not be queried (report incomplete).
 """
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 import argparse
 import json

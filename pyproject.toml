@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dns-hygiene-checker"
+dynamic = ["version"]
+description = "Find dangling DNS records and subdomain-takeover setups, plus CAA and DNSSEC checks, via DoH"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.7"
+authors = [{ name = "Errant Solutions", email = "hello@errant.solutions" }]
+keywords = ["dns", "subdomain-takeover", "dangling", "caa", "dnssec", "security"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://errant.solutions/tools/dns-hygiene-checker.html"
+Source = "https://git.canutethegreat.com/CanuteTheGreat/dns-hygiene-checker"
+Changelog = "https://git.canutethegreat.com/CanuteTheGreat/dns-hygiene-checker/src/branch/master/CHANGELOG.md"
+Releases = "https://git.canutethegreat.com/CanuteTheGreat/dns-hygiene-checker/releases"
+
+[project.scripts]
+dns-hygiene-checker = "dns_hygiene_checker:main"
+
+[tool.hatch.version]
+path = "dns_hygiene_checker.py"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["dns_hygiene_checker.py"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["dns_hygiene_checker.py", "README.md", "LICENSE", "CHANGELOG.md", "tests"]

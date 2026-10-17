@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(os.path.dirname(HERE), "dns_hygiene_checker.py")
-TYPES = {"A": 1, "AAAA": 28, "CNAME": 5, "TXT": 16, "MX": 15}
+TYPES = {"A": 1, "AAAA": 28, "CNAME": 5, "TXT": 16, "MX": 15, "NS": 2, "SRV": 33, "DS": 43, "CAA": 257, "SOA": 6}
 LIVE, DEAD = "127.0.0.1", "127.0.0.2"
 
 # (name, type) -> list of record data; names not listed are NXDOMAIN unless a
@@ -50,8 +50,26 @@ ZONE = {
     ("_spf.good.test", "TXT"): ['"v=spf1 ip4:192.0.2.0/24 -all"'],
     ("nospf.test", "TXT"): ['"some-other-verification=1"'],
     ("www.clean.test", "A"): [LIVE],
+    # dangling NS delegation, a half-dangling one, MX/SRV targets
+    ("legacy.hyg.test", "NS"): ["ns1.expired-dns-host.test.", "ns2.expired-dns-host.test."],
+    ("half.hyg.test", "NS"): ["ns1.good-dns.test.", "ns.gone-dns.test."],
+    ("ns1.good-dns.test", "A"): [LIVE],
+    ("hyg.test", "MX"): ["10 mx1.hyg.test.", "20 old-mx.retired-mail.test."],
+    ("mx1.hyg.test", "A"): [LIVE],
+    ("mail2.hyg.test", "A"): [LIVE],
+    ("mail2.hyg.test", "MX"): ["10 nowhere.hyg-mail.test."],
+    ("zone-only.disc.test", "CNAME"): ["old-thing.example.net."],
+    ("box.lab.disc.test", "A"): [DEAD],
+    ("_sip._tls.hyg.test", "SRV"): ["100 1 443 sipdir.gone-provider.test."],
+    ("_autodiscover._tcp.hyg.test", "SRV"): ["0 0 443 mx1.hyg.test."],
+    # CAA + DNSSEC: clean.test has both, hyg.test neither
+    ("clean.test", "CAA"): ['0 issue "letsencrypt.org"', '0 issuewild ";"', '0 iodef "mailto:sec@clean.test"'],
+    ("clean.test", "DS"): ["2371 13 2 0123456789ABCDEF"],
+    ("signed-novalidate.test", "DS"): ["1 13 2 00"],
 }
-EXISTS_EMPTY = {"nospf.test", "clean.test", "hyg.test", "wild.test", "badwild.test", "notls.test"}
+VALIDATED = {"clean.test"}
+EXISTS_EMPTY = {"nospf.test", "clean.test", "hyg.test", "wild.test", "badwild.test", "notls.test",
+                "signed-novalidate.test", "disc.test"}
 WILDCARDS = {"wild.test": LIVE, "badwild.test": LIVE, "notls.test": DEAD}
 SERVFAIL = {"broken.flaky.test"}
 
@@ -74,13 +92,54 @@ class DohHandler(BaseHTTPRequestHandler):
                 if name.endswith("." + parent):
                     status = 0
                     answers = [ip] if rtype == "A" else []
-        body = json.dumps({"Status": status, "Answer": [
+        body = json.dumps({"Status": status, "AD": name in VALIDATED, "Answer": [
             {"name": name + ".", "type": TYPES[rtype], "TTL": 60, "data": d} for d in answers]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/dns-json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+CT_DATA = [{"name_value": "takeover.disc.test\n*.disc.test"}, {"name_value": "disc.test\nwww.disc.test"},
+           {"name_value": "WWW.disc.test"}, {"name_value": "evil.disc.test.attacker.example"}]
+CF_RECORDS = [[{"name": "cf-only.disc.test"}, {"name": "disc.test"}], [{"name": "page2.disc.test"}]]
+CT_MODE = {"crtsh": "ok"}
+
+
+class DiscoveryHandler(BaseHTTPRequestHandler):
+    """Plays crt.sh, Cert Spotter and the Cloudflare API."""
+
+    def log_message(self, *a):
+        pass
+
+    def reply(self, code, obj):
+        data = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        u = urlparse(self.path)
+        q = parse_qs(u.query)
+        if u.path == "/crtsh/":
+            if CT_MODE["crtsh"] != "ok":
+                return self.reply(502, {"error": "bad gateway"})
+            assert q["q"] == ["%.disc.test"] and q["output"] == ["json"]
+            return self.reply(200, CT_DATA)
+        if u.path == "/certspotter":
+            assert q["include_subdomains"] == ["true"] and q["expand"] == ["dns_names"]
+            return self.reply(200, [{"dns_names": ["spotted.disc.test", "*.disc.test"]}])
+        if self.headers.get("Authorization") != "Bearer cf-test-token":
+            return self.reply(403, {"success": False})
+        if u.path == "/cf/zones":
+            return self.reply(200, {"result": [{"id": "z1", "name": q["name"][0]}]})
+        if u.path == "/cf/zones/z1/dns_records":
+            page = int(q["page"][0])
+            return self.reply(200, {"result": CF_RECORDS[page - 1], "result_info": {"page": page, "total_pages": 2}})
+        self.reply(404, {})
 
 
 class PlatformHandler(BaseHTTPRequestHandler):
@@ -141,6 +200,11 @@ def setUpModule():
     HTTPS.socket = default.wrap_socket(HTTPS.socket, server_side=True)
     threading.Thread(target=HTTPS.serve_forever, daemon=True).start()
 
+    global DISC_URL
+    DISC = HTTPServer((LIVE, 0), DiscoveryHandler)
+    DISC_URL = "http://%s:%d" % DISC.server_address
+    threading.Thread(target=DISC.serve_forever, daemon=True).start()
+
     DOH = HTTPServer((LIVE, 0), DohHandler)
     DOH_URL = "http://%s:%d/dns-query" % DOH.server_address
     threading.Thread(target=DOH.serve_forever, daemon=True).start()
@@ -165,7 +229,7 @@ def by_name(results, domain):
     return out
 
 
-SUBS = "www,dead,mixed,gone,bucket,takeover,claimed,cdn,blog,doesnotexist"
+SUBS = "www,dead,mixed,gone,bucket,takeover,claimed,cdn,blog,doesnotexist,legacy,half,mail2"
 
 
 class TestChecks(unittest.TestCase):
@@ -229,6 +293,24 @@ class TestChecks(unittest.TestCase):
     def test_no_wildcard_no_wildcard_finding(self):
         self.assertFalse(any("Wildcard" in x["message"] for x in self.res["hyg.test"]))
 
+    def test_dangling_ns_delegation(self):
+        msg = self.one("legacy.hyg.test", "FAIL")
+        self.assertIn("NS delegation to ns1.expired-dns-host.test, ns2.expired-dns-host.test", msg)
+        self.assertIn("ns.gone-dns.test", self.one("half.hyg.test", "WARN"))
+
+    def test_dangling_mx_and_srv(self):
+        apex = [x["message"] for x in self.f["hyg.test"] if x["level"] == "WARN"]
+        self.assertTrue(any("MX -> old-mx.retired-mail.test does NOT resolve" in m for m in apex), apex)
+        self.assertFalse(any("mx1.hyg.test" in m for m in apex), apex)
+        sub = [x["message"] for x in self.f["mail2.hyg.test"]]
+        self.assertTrue(any("MX -> nowhere.hyg-mail.test does NOT resolve" in m for m in sub), sub)
+        self.assertEqual([x["level"] for x in self.f["_sip._tls.hyg.test"]], ["WARN"])
+        self.assertNotIn("_autodiscover._tcp.hyg.test", self.f)
+
+    def test_caa_and_dnssec_missing(self):
+        self.assertIn("no CAA record on hyg.test", self.one("CAA", "WARN"))
+        self.assertIn("not DNSSEC-signed", self.one("DNSSEC", "WARN"))
+
     def test_findings_sorted_by_severity(self):
         order = {"FAIL": 0, "WARN": 1, "INFO": 2, "OK": 3}
         levels = [order[x["level"]] for x in self.res["hyg.test"]]
@@ -254,6 +336,74 @@ class TestWildcard(unittest.TestCase):
         f = self.wildcard_finding("notls.test")
         self.assertEqual([x["level"] for x in f], ["INFO"], f)
         self.assertIn("nothing answered TLS", f[0]["message"])
+
+
+class TestApexAndDiscovery(unittest.TestCase):
+    def test_caa_and_dnssec_present(self):
+        res = json.loads(run("clean.test", "--subdomains", "www", "--json").stdout)
+        f = by_name(res, "clean.test")
+        self.assertEqual(f["CAA"][0]["level"], "OK")
+        self.assertIn("letsencrypt.org", f["CAA"][0]["message"])
+        self.assertIn("issuewild: 1", f["CAA"][0]["message"])
+        self.assertNotIn("no iodef", f["CAA"][0]["message"])
+        self.assertEqual(f["DNSSEC"][0]["level"], "OK")
+        f = by_name(json.loads(run("signed-novalidate.test", "--subdomains", "x", "--json").stdout), "signed-novalidate.test")
+        self.assertEqual(f["DNSSEC"][0]["level"], "INFO")
+        p = run("clean.test", "--subdomains", "www", "--json", "--no-apex-checks")
+        self.assertNotIn("CAA", by_name(json.loads(p.stdout), "clean.test"))
+
+    def disc(self, *args):
+        p = run("disc.test", "--json", "--ct-url", DISC_URL + "/crtsh/", "--certspotter-url", DISC_URL + "/certspotter",
+                "--cloudflare-api", DISC_URL + "/cf", *args)
+        return p, json.loads(p.stdout)["disc.test"]
+
+    def checked_names(self, findings):
+        return {x["name"] for x in findings}
+
+    def test_ct_discovery(self):
+        CT_MODE["crtsh"] = "ok"
+        ZONE[("takeover.disc.test", "CNAME")] = ["unclaimed-app.herokuapp.com."]
+        try:
+            p, f = self.disc("--ct", "--only-discovered", "--no-apex-checks")
+        finally:
+            del ZONE[("takeover.disc.test", "CNAME")]
+        self.assertEqual(p.returncode, 1, f)  # the CT-discovered name is an unclaimed Heroku app
+        self.assertIn("takeover.disc.test", self.checked_names(f))
+        notes = [x["message"] for x in f if x["name"] == "disc.test" and x["level"] == "INFO"]
+        self.assertIn("crt.sh: 2 subdomain name(s) discovered", notes)  # takeover + www (deduped, no apex/wildcard)
+
+    def test_ct_falls_back_to_cert_spotter(self):
+        CT_MODE["crtsh"] = "down"
+        try:
+            p, f = self.disc("--ct", "--only-discovered", "--no-apex-checks")
+        finally:
+            CT_MODE["crtsh"] = "ok"
+        self.assertEqual(p.returncode, 0, f)
+        self.assertIn("Cert Spotter: 1 subdomain name(s) discovered", [x["message"] for x in f])
+
+    def test_zone_file_and_cloudflare(self):
+        zone = os.path.join(TMP, "disc.zone")
+        with open(zone, "w") as fh:
+            fh.write("$ORIGIN disc.test.\n$TTL 300\n@ IN SOA ns1 hostmaster 1 2 3 4 5\n"
+                     "www IN A 127.0.0.1\n  IN AAAA ::1\nzone-only IN CNAME old-thing.example.net.\n"
+                     "deep.sub.disc.test. IN A 127.0.0.1 ; comment\n$ORIGIN lab\nbox IN A 127.0.0.2\n")
+        p, f = self.disc("--zone-file", zone, "--only-discovered", "--no-apex-checks")
+        self.assertIn("zone file: 4 subdomain name(s) discovered", [x["message"] for x in f])
+        self.assertIn("zone-only.disc.test", self.checked_names(f))
+        self.assertIn("box.lab.disc.test", self.checked_names(f))
+        os.environ["CLOUDFLARE_API_TOKEN"] = "cf-test-token"
+        try:
+            p, f = self.disc("--cloudflare", "--only-discovered", "--no-apex-checks")
+        finally:
+            del os.environ["CLOUDFLARE_API_TOKEN"]
+        self.assertIn("Cloudflare: 2 subdomain name(s) discovered", [x["message"] for x in f])
+        p, f = self.disc("--cloudflare", "--no-apex-checks")
+        self.assertEqual(p.returncode, 2)  # no token: discovery failed, report incomplete
+        self.assertTrue(any("CLOUDFLARE_API_TOKEN" in x["message"] for x in f if x["level"] == "ERROR"))
+
+    def test_only_discovered_needs_a_source(self):
+        p = run("disc.test", "--only-discovered")
+        self.assertEqual(p.returncode, 2)
 
 
 class TestCli(unittest.TestCase):
@@ -297,10 +447,14 @@ class TestCli(unittest.TestCase):
         levels = [x["level"] for x in json.loads(p.stdout)["flaky.test"]]
         self.assertIn("ERROR", levels)
 
+    def test_version(self):
+        p = subprocess.run([sys.executable, TOOL, "--version"], capture_output=True, text=True)
+        self.assertRegex(p.stdout, r"^dns-hygiene-checker \d+\.\d+\.\d+$")
+
     def test_help_lists_options(self):
         p = subprocess.run([sys.executable, TOOL, "--help"], capture_output=True, text=True)
         self.assertEqual(p.returncode, 0)
-        for opt in ("--subdomains", "--json", "--doh-url"):
+        for opt in ("--subdomains", "--json", "--doh-url", "--ct", "--zone-file", "--cloudflare", "--only-discovered"):
             self.assertIn(opt, p.stdout)
 
 

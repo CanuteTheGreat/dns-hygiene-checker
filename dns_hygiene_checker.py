@@ -14,20 +14,35 @@ flags a few other everyday DNS-hygiene footguns:
   - SPF "include:" domain that exists but publishes no SPF record (permerror)
   - SPF record referencing an "include:" domain that doesn't resolve
   - Wildcard DNS present without a TLS cert that covers arbitrary subdomains
+  - NS delegations whose nameserver hostnames don't resolve (dangling delegation:
+    whoever registers that nameserver's domain controls the subdomain)
+  - MX and common SRV records pointing at hostnames that don't resolve
+  - no CAA record (any CA may issue for the domain), and DNSSEC not enabled
+
+Subdomains to check come from a built-in list of common names and/or
+--subdomains, plus discovery: --ct (Certificate Transparency logs via crt.sh,
+falling back to Cert Spotter), --zone-file (a BIND zone file / export) and
+--cloudflare (every record in the Cloudflare zone, token in
+CLOUDFLARE_API_TOKEN).
 
 Uses only the Python standard library (socket, ssl) plus DNS-over-HTTPS via Cloudflare's
 free public resolver (https://cloudflare-dns.com/dns-query) — no API key, no signup,
 no local `dig`/`host` binary required (this host doesn't have one).
 
 Usage:
-    python3 dns_hygiene_checker.py example.com
-    python3 dns_hygiene_checker.py example.com --subdomains www,mail,staging,old-blog
-    python3 dns_hygiene_checker.py example.com --json
-    python3 dns_hygiene_checker.py example.com --doh-url https://dns.google/resolve
+    dns-hygiene-checker example.com
+    dns-hygiene-checker example.com --subdomains www,mail,staging,old-blog
+    dns-hygiene-checker example.com --ct                 # + every name in CT logs
+    dns-hygiene-checker example.com --zone-file example.com.zone --only-discovered
+    CLOUDFLARE_API_TOKEN=... dns-hygiene-checker example.com --cloudflare
+    dns-hygiene-checker example.com --json
+    dns-hygiene-checker example.com --doh-url https://dns.google/resolve
 
 Exit codes: 0 = no FAIL findings, 1 = at least one FAIL (takeover risk),
 2 = the DNS-over-HTTPS resolver could not be queried (report incomplete).
 """
+__version__ = "1.2.0"
+
 import argparse
 import json
 import os
@@ -40,6 +55,12 @@ import urllib.request
 import urllib.error
 
 DOH_URL = "https://cloudflare-dns.com/dns-query"
+CT_URL = "https://crt.sh/"
+CERTSPOTTER_URL = "https://api.certspotter.com/v1/issuances"
+CLOUDFLARE_API = "https://api.cloudflare.com/client/v4"
+RTYPES = {"A": 1, "NS": 2, "CNAME": 5, "MX": 15, "TXT": 16, "AAAA": 28, "SRV": 33, "DS": 43, "CAA": 257}
+SRV_NAMES = ["_autodiscover._tcp", "_sip._tls", "_sipfederationtls._tcp", "_xmpp-client._tcp", "_caldavs._tcp",
+             "_carddavs._tcp", "_imaps._tcp", "_submission._tcp"]
 
 COMMON_SUBDOMAINS = [
     "www", "mail", "ftp", "webmail", "smtp", "pop", "imap", "ns1", "ns2",
@@ -58,6 +79,14 @@ CLAIMABLE_SUFFIXES = [
     ".wordpress.com", ".shopify.com", ".myshopify.com", ".zendesk.com",
     ".statuspage.io", ".trafficmanager.net", ".cloudfront.net", ".ghost.io",
     ".pantheonsite.io", ".wpengine.com", ".unbouncepages.com",
+    ".elasticbeanstalk.com", ".bitbucket.io", ".helpscoutdocs.com", ".helpjuice.com", ".webflow.io",
+    ".tumblr.com", ".uservoice.com", ".cargocollective.com", ".launchrock.com", ".teamwork.com",
+    ".strikinglydns.com", ".smartjobboard.com", ".agilecrm.com", ".freshdesk.com", ".gitbook.io",
+    ".blob.core.windows.net", ".cloudapp.azure.com", ".azure-api.net", ".azurefd.net",
+    ".azurecontainer.io", ".azurecr.io", ".azurehdinsight.net", ".redis.cache.windows.net",
+    ".servicebus.windows.net", ".search.windows.net", ".trafficmanager.net", ".vercel.app",
+    ".fly.dev", ".onrender.com", ".firebaseapp.com", ".web.app", ".pages.dev", ".workers.dev",
+    ".kinsta.cloud", ".ngrok.io", ".frontify.com", ".canny.io", ".simplebooklet.com",
 ]
 
 # Fingerprint strings seen in the body of a claimable-but-unclaimed page for
@@ -80,6 +109,22 @@ UNCLAIMED_HTTP_SIGNATURES = {
     "trafficmanager.net": ("this domain is not configured", 404),
     "unbouncepages.com": ("the requested url was not found", 404),
     "zendesk.com": ("help center closed", 404),
+    "bitbucket.io": ("repository not found", 404),
+    "helpscoutdocs.com": ("no settings were found for this company", 404),
+    "helpjuice.com": ("we could not find what you're looking for", 404),
+    "webflow.io": ("the page you are looking for doesn't exist or has been moved", 404),
+    "tumblr.com": ("whatever you were looking for doesn't currently exist at this address", 404),
+    "uservoice.com": ("this uservoice subdomain is currently available", 404),
+    "launchrock.com": ("it looks like you may have taken a wrong turn somewhere", 404),
+    "teamwork.com": ("oops - we didn't find your site", 404),
+    "smartjobboard.com": ("this job board website is either expired or its domain name is invalid", 404),
+    "agilecrm.com": ("sorry, this page is no longer available", 404),
+    "strikinglydns.com": ("page not found - striking", 404),
+    "canny.io": ("there is no such company", 404),
+    "vercel.app": ("deployment_not_found", 404),
+    "onrender.com": ("not found", 404),
+    "fly.dev": ("404 not found", 404),
+    "ngrok.io": ("tunnel", 404),
 }
 
 
@@ -138,7 +183,7 @@ RESOLVER_FAILURES = []
 
 
 def doh_query(name, rtype, timeout=10):
-    url = f"{DOH_URL}?name={urllib.parse.quote(name)}&type={rtype}"
+    url = f"{DOH_URL}?name={urllib.parse.quote(name)}&type={rtype}&do=1"
     req = urllib.request.Request(url, headers={"Accept": "application/dns-json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -159,8 +204,23 @@ def get_records(name, rtype):
     if status == 2:  # SERVFAIL: the resolver couldn't get an answer, not "no record"
         RESOLVER_FAILURES.append(f"{name}/{rtype}: SERVFAIL")
     answers = data.get("Answer", []) or []
-    values = [a["data"] for a in answers if a.get("type") == {"A": 1, "AAAA": 28, "CNAME": 5, "TXT": 16, "MX": 15}.get(rtype)]
+    values = [a["data"] for a in answers if a.get("type") == RTYPES.get(rtype)]
     return values, status
+
+
+def get_ad(name):
+    """(DNSSEC-validated by the resolver?, status) for the name's SOA lookup."""
+    data = doh_query(name, "SOA")
+    return (bool(data.get("AD")) if data else None), (data or {}).get("Status")
+
+
+def resolves(host):
+    """True if host has an A or AAAA record, False if not (NXDOMAIN or no data)."""
+    a, st = get_records(host, "A")
+    if a:
+        return True
+    aaaa, _ = get_records(host, "AAAA")
+    return bool(aaaa)
 
 
 def txt_value(data):
@@ -178,10 +238,39 @@ def check_port_open(host, port, timeout=4):
         return False
 
 
+def check_delegation(fqdn, findings):
+    """A delegated name (NS records of its own) whose nameserver hostnames don't resolve."""
+    ns_vals, _ = get_records(fqdn, "NS")
+    dead = []
+    for ns in ns_vals:
+        host = ns.rstrip(".").lower()
+        if not resolves(host):
+            dead.append(host)
+    if dead and len(dead) == len(ns_vals):
+        findings.append((fqdn, "FAIL", f"NS delegation to {', '.join(dead)}, none of which resolve -- a dangling "
+                                       "delegation: whoever registers that nameserver domain controls this zone"))
+    elif dead:
+        findings.append((fqdn, "WARN", f"NS {', '.join(dead)} in the delegation don't resolve (the other "
+                                       "nameservers still answer) -- remove them"))
+    return bool(ns_vals)
+
+
+def check_mx(fqdn, findings):
+    for mx in get_records(fqdn, "MX")[0]:
+        parts = mx.split()
+        host = parts[-1].rstrip(".").lower() if parts else ""
+        if host and host != "." and not resolves(host):
+            findings.append((fqdn, "WARN", f"MX -> {host} does NOT resolve -- mail to this name bounces, and if "
+                                           "that domain is unregistered someone could claim it and receive it"))
+
+
 def check_subdomain(sub, domain, findings):
     fqdn = f"{sub}.{domain}"
+    delegated = check_delegation(fqdn, findings)
     cname_vals, cname_status = get_records(fqdn, "CNAME")
     a_vals, a_status = get_records(fqdn, "A")
+    if (cname_vals or a_vals) and not delegated:
+        check_mx(fqdn, findings)
 
     if not cname_vals and not a_vals:
         if cname_status == 3 and a_status == 3:  # NXDOMAIN both
@@ -252,6 +341,37 @@ def check_spf_includes(domain, findings):
                                   "treat this include as a permanent error (SPF permerror)"))
 
 
+def check_apex(domain, findings):
+    check_mx(domain, findings)
+    for name in SRV_NAMES:
+        for srv in get_records(f"{name}.{domain}", "SRV")[0]:
+            parts = srv.split()
+            host = parts[-1].rstrip(".").lower() if len(parts) == 4 else ""
+            if host and host != "." and not resolves(host):
+                findings.append((f"{name}.{domain}", "WARN", f"SRV -> {host} does NOT resolve -- dangling service record"))
+    caa = [c for c in get_records(domain, "CAA")[0]]
+    if not caa:
+        findings.append(("CAA", "WARN", f"no CAA record on {domain}: any certificate authority may issue certificates "
+                                        "for it (add e.g. '0 issue \"letsencrypt.org\"' for the CAs you use)"))
+    else:
+        issuers = [c.split(None, 2)[2].strip('"') for c in caa if len(c.split(None, 2)) == 3 and c.split()[1].lower() == "issue"]
+        wild = [c for c in caa if len(c.split()) >= 2 and c.split()[1].lower() == "issuewild"]
+        iodef = [c for c in caa if len(c.split()) >= 2 and c.split()[1].lower() == "iodef"]
+        findings.append(("CAA", "OK", f"CAA restricts issuance to: {', '.join(issuers) or '(none)'}"
+                                      + (f"; issuewild: {len(wild)} record(s)" if wild else "")
+                                      + ("" if iodef else " (no iodef: CAs can't report refused requests to you)")))
+    ds, _ = get_records(domain, "DS")
+    ad, _ = get_ad(domain)
+    if not ds:
+        findings.append(("DNSSEC", "WARN", f"{domain} is not DNSSEC-signed (no DS record at the parent): answers can be "
+                                           "spoofed in transit and DANE/TLSA can't be used"))
+    elif ad:
+        findings.append(("DNSSEC", "OK", f"{domain} is DNSSEC-signed and the resolver validated it (AD flag)"))
+    else:
+        findings.append(("DNSSEC", "INFO", f"{domain} has a DS record but the resolver didn't mark answers as "
+                                           "validated (non-validating resolver, or a broken chain)"))
+
+
 def check_wildcard(domain, findings):
     probe = f"dnshygiene-wildcard-probe-{os.getpid()}.{domain}"
     a_vals, status = get_records(probe, "A")
@@ -298,16 +418,21 @@ def wildcard_cert_verdict(probe, ips):
         raw.close()
 
 
-def audit(domain, subdomains, quiet=False):
+def audit(domain, subdomains, quiet=False, apex_checks=True, notes=()):
     if not quiet:
         print(f"\n=== {domain} ===")
+        for n in notes:
+            print(f"  [{n[1]:5s}] {n[0]}: {n[2]}")
     findings = []
     for sub in subdomains:
         check_subdomain(sub, domain, findings)
+    sub_found = bool(findings)
     check_spf_includes(domain, findings)
     check_wildcard(domain, findings)
+    if apex_checks:
+        check_apex(domain, findings)
 
-    if not findings and not RESOLVER_FAILURES:
+    if not sub_found and not RESOLVER_FAILURES:
         findings.append((domain, "INFO", "no subdomains from the checked list currently resolve — "
                                           "nothing to report (try --subdomains with your real list "
                                           "for a more complete picture)"))
@@ -320,9 +445,95 @@ def audit(domain, subdomains, quiet=False):
     return findings
 
 
-def main():
-    global DOH_URL
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def _http_json(url, headers=None, timeout=30):
+    req = urllib.request.Request(url, headers=dict({"User-Agent": "dns-hygiene-checker/%s" % __version__,
+                                                    "Accept": "application/json"}, **(headers or {})))
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
+def relative_names(names, domain):
+    out = set()
+    for n in names:
+        n = n.strip().lower().rstrip(".")
+        if n.startswith("*."):
+            n = n[2:]
+        if n.endswith("." + domain) and " " not in n:
+            out.add(n[: -len(domain) - 1])
+    return sorted(out)
+
+
+def discover_ct(domain):
+    """Names from Certificate Transparency: crt.sh first, Cert Spotter if crt.sh fails. Returns (subs, source)."""
+    errors = []
+    for attempt in range(2):
+        try:
+            data = _http_json(CT_URL + "?q=" + urllib.parse.quote("%." + domain) + "&output=json", timeout=60)
+            names = [v for e in data for v in str(e.get("name_value", "")).split("\n")]
+            return relative_names(names, domain), "crt.sh"
+        except Exception as e:  # crt.sh is often slow or 5xx
+            errors.append("crt.sh: %s" % e)
+    try:
+        data = _http_json(CERTSPOTTER_URL + "?domain=" + urllib.parse.quote(domain) +
+                          "&include_subdomains=true&expand=dns_names", timeout=60)
+        return relative_names([n for e in data for n in e.get("dns_names", [])], domain), "Cert Spotter"
+    except Exception as e:
+        errors.append("Cert Spotter: %s" % e)
+    raise RuntimeError("; ".join(errors))
+
+
+def discover_zone_file(path, domain):
+    """Owner names from a BIND-style zone file (also Cloudflare/Route53 exports)."""
+    origin, last, names = domain + ".", None, set()
+    with open(path) as f:
+        for raw in f:
+            line = raw.split(";", 1)[0].rstrip()
+            if not line.strip():
+                continue
+            if line.upper().startswith("$ORIGIN"):
+                origin = line.split()[1]
+                if not origin.endswith("."):
+                    origin += "." + domain + "."
+                continue
+            if line.startswith("$"):
+                continue
+            if line[0].isspace():
+                owner = last
+            else:
+                owner = line.split()[0]
+                if owner == "@":
+                    owner = origin
+                elif not owner.endswith("."):
+                    owner = owner + "." + origin
+                last = owner
+            if owner:
+                names.add(owner)
+    return relative_names(names, domain)
+
+
+def discover_cloudflare(domain):
+    token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+    if not token:
+        raise RuntimeError("--cloudflare needs CLOUDFLARE_API_TOKEN (a token with Zone:DNS:Read)")
+    h = {"Authorization": "Bearer " + token}
+    zones = _http_json(CLOUDFLARE_API + "/zones?name=" + urllib.parse.quote(domain), h).get("result") or []
+    if not zones:
+        raise RuntimeError("no Cloudflare zone named %s visible to this token" % domain)
+    names, page = [], 1
+    while True:
+        d = _http_json("%s/zones/%s/dns_records?per_page=500&page=%d" % (CLOUDFLARE_API, zones[0]["id"], page), h)
+        names += [r.get("name", "") for r in d.get("result") or []]
+        info = d.get("result_info") or {}
+        if page >= int(info.get("total_pages") or 1):
+            break
+        page += 1
+    return relative_names(names, domain)
+
+
+def main(argv=None):
+    global DOH_URL, CT_URL, CERTSPOTTER_URL, CLOUDFLARE_API
+    parser = argparse.ArgumentParser(prog="dns-hygiene-checker", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--version", action="version", version="%(prog)s " + __version__)
     parser.add_argument("domains", nargs="+", help="domain(s) to check, e.g. example.com")
     parser.add_argument("--subdomains", help="comma-separated list of subdomains to check "
                                               "instead of the built-in common list")
@@ -330,22 +541,52 @@ def main():
     parser.add_argument("--doh-url", default=DOH_URL,
                         help="DNS-over-HTTPS JSON endpoint to query (default: %(default)s; "
                              "e.g. https://dns.google/resolve)")
-    args = parser.parse_args()
-    DOH_URL = args.doh_url
+    parser.add_argument("--ct", action="store_true",
+                        help="also check every subdomain found in Certificate Transparency logs (crt.sh, Cert Spotter)")
+    parser.add_argument("--zone-file", metavar="FILE", help="also check every name in this BIND-style zone file")
+    parser.add_argument("--cloudflare", action="store_true",
+                        help="also check every record in the domain's Cloudflare zone (CLOUDFLARE_API_TOKEN)")
+    parser.add_argument("--only-discovered", action="store_true",
+                        help="skip the built-in/--subdomains list; check only discovered names")
+    parser.add_argument("--no-apex-checks", action="store_true", help="skip the MX/SRV/CAA/DNSSEC checks")
+    parser.add_argument("--ct-url", default=CT_URL, help=argparse.SUPPRESS)
+    parser.add_argument("--certspotter-url", default=CERTSPOTTER_URL, help=argparse.SUPPRESS)
+    parser.add_argument("--cloudflare-api", default=CLOUDFLARE_API, help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+    DOH_URL, CT_URL, CERTSPOTTER_URL, CLOUDFLARE_API = args.doh_url, args.ct_url, args.certspotter_url, args.cloudflare_api
+    if args.only_discovered and not (args.ct or args.zone_file or args.cloudflare):
+        parser.error("--only-discovered needs --ct, --zone-file or --cloudflare")
 
-    subs = args.subdomains.split(",") if args.subdomains else COMMON_SUBDOMAINS
-    subs = [s.strip() for s in subs if s.strip()]
+    base = [] if args.only_discovered else (args.subdomains.split(",") if args.subdomains else COMMON_SUBDOMAINS)
+    base = [s.strip() for s in base if s.strip()]
 
     all_results = {}
     resolver_failed = False
     for domain in args.domains:
-        domain = domain.strip().replace("https://", "").replace("http://", "").rstrip("/")
+        domain = domain.strip().replace("https://", "").replace("http://", "").rstrip("/").lower()
         del RESOLVER_FAILURES[:]
-        findings = audit(domain, subs, quiet=args.json)
+        discovered, notes = [], []
+        for flag, fn, label in ((args.ct, discover_ct, "CT"), (args.zone_file, discover_zone_file, "zone file"),
+                                (args.cloudflare, discover_cloudflare, "Cloudflare")):
+            if not flag:
+                continue
+            try:
+                if fn is discover_ct:
+                    found, label = fn(domain)
+                elif fn is discover_zone_file:
+                    found = fn(args.zone_file, domain)
+                else:
+                    found = fn(domain)
+                discovered += found
+                notes.append((domain, "INFO", f"{label}: {len(found)} subdomain name(s) discovered"))
+            except (RuntimeError, OSError, ValueError) as e:
+                RESOLVER_FAILURES.append(f"{label} discovery: {e}")
+        subs = list(dict.fromkeys(base + [d for d in discovered if d]))
+        findings = notes + audit(domain, subs, quiet=args.json, apex_checks=not args.no_apex_checks, notes=notes)
         if RESOLVER_FAILURES:
             resolver_failed = True
-            msg = (f"{len(RESOLVER_FAILURES)} DNS lookup(s) via {DOH_URL} failed, so this report is "
-                   f"INCOMPLETE (first: {RESOLVER_FAILURES[0]})")
+            msg = (f"{len(RESOLVER_FAILURES)} lookup(s) failed (DNS via {DOH_URL} or discovery), so this "
+                   f"report is INCOMPLETE (first: {RESOLVER_FAILURES[0]})")
             findings.insert(0, (domain, "ERROR", msg))
             if not args.json:
                 print(f"  [ERROR] {domain}: {msg}")
@@ -355,8 +596,8 @@ def main():
         print(json.dumps(all_results, indent=2))
 
     has_fail = any(f["level"] == "FAIL" for res in all_results.values() for f in res)
-    sys.exit(1 if has_fail else (2 if resolver_failed else 0))
+    return 1 if has_fail else (2 if resolver_failed else 0)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

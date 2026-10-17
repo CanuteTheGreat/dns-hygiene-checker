@@ -51,7 +51,7 @@ ZONE = {
     ("nospf.test", "TXT"): ['"some-other-verification=1"'],
     ("www.clean.test", "A"): [LIVE],
     # dangling NS delegation, a half-dangling one, MX/SRV targets
-    ("legacy.hyg.test", "NS"): ["ns1.expired-dns-host.test.", "ns2.expired-dns-host.test."],
+    ("retired-zone.hyg.test", "NS"): ["ns1.expired-dns-host.test.", "ns2.expired-dns-host.test."],
     ("half.hyg.test", "NS"): ["ns1.good-dns.test.", "ns.gone-dns.test."],
     ("ns1.good-dns.test", "A"): [LIVE],
     ("hyg.test", "MX"): ["10 mx1.hyg.test.", "20 old-mx.retired-mail.test."],
@@ -229,7 +229,7 @@ def by_name(results, domain):
     return out
 
 
-SUBS = "www,dead,mixed,gone,bucket,takeover,claimed,cdn,blog,doesnotexist,legacy,half,mail2"
+SUBS = "www,dead,mixed,gone,bucket,takeover,claimed,cdn,blog,doesnotexist,retired-zone,half,mail2"
 
 
 class TestChecks(unittest.TestCase):
@@ -294,7 +294,7 @@ class TestChecks(unittest.TestCase):
         self.assertFalse(any("Wildcard" in x["message"] for x in self.res["hyg.test"]))
 
     def test_dangling_ns_delegation(self):
-        msg = self.one("legacy.hyg.test", "FAIL")
+        msg = self.one("retired-zone.hyg.test", "FAIL")
         self.assertIn("NS delegation to ns1.expired-dns-host.test, ns2.expired-dns-host.test", msg)
         self.assertIn("ns.gone-dns.test", self.one("half.hyg.test", "WARN"))
 

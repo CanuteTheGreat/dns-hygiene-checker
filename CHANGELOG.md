@@ -2,6 +2,18 @@
 
 All notable changes. Versions are git tags; each tag has a Forgejo release with checksums.
 
+## 1.3.0 - 2026-10-28
+
+- An "unclaimed" page is no longer always reported as claimable. GitHub Pages, Vercel, Netlify, Azure App
+  Service and Pantheon let the domain's owner verify the domain, after which other accounts can't attach it,
+  so the same page is a real takeover risk on one domain and not on another. Those hosts now get
+  WARN `possibly claimable: <provider> blocks takeover if the domain is verified with <mechanism>; check your
+  account`. Azure's `asuid.<host>` TXT and Vercel's `_vercel.<domain>` TXT are looked up (found: INFO; Azure
+  missing: FAIL). GitHub's TXT name contains the account name, so it can't be checked from DNS. Hosts whose
+  docs describe no such check (Heroku, S3, Surge, Read the Docs, Ghost(Pro), ...) stay FAIL, now worded
+  "claimable". Thanks to a reader for the correction.
+- Tests: one end-to-end test per provider class.
+
 ## 1.2.1 - 2026-10-17
 
 - Takeover verdicts follow can-i-take-over-xyz: a dangling CNAME to a service that verifies domain

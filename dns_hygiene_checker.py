@@ -10,6 +10,12 @@ flags a few other everyday DNS-hygiene footguns:
   - CNAME points at a known "claimable" cloud hostname pattern (github.io, s3
     website endpoints, herokuapp.com, azurewebsites.net, fastly.net, etc.) with no
     A/AAAA behind it — these are the ones attackers scan for specifically
+  - the same, when the platform answers with its "unclaimed" page. Some platforms let
+    the domain owner verify the domain (GitHub Pages, Vercel, Azure App Service, Pantheon),
+    after which no other account can attach it. There the finding says "possibly
+    claimable ... check your account" instead of "claimable"; it says "claimable"
+    only where the provider's docs describe no such protection, or the record that
+    would show it (Azure's asuid TXT) is missing
   - A records where some or all addresses no longer answer on port 80/443 (stale infra)
   - SPF "include:" domain that exists but publishes no SPF record (permerror)
   - SPF record referencing an "include:" domain that doesn't resolve
@@ -41,7 +47,7 @@ Usage:
 Exit codes: 0 = no FAIL findings, 1 = at least one FAIL (takeover risk),
 2 = the DNS-over-HTTPS resolver could not be queried (report incomplete).
 """
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 
 import argparse
 import json
@@ -103,6 +109,51 @@ VERIFIED_SERVICES = {
     ".hubspot.net": "HubSpot", ".ghs.googlehosted.com": "Google Sites", ".storage.googleapis.com": "Google Cloud Storage",
     ".gitlab.io": "GitLab Pages", ".akamaiedge.net": "Akamai", ".acquia-sites.com": "Acquia",
 }
+
+
+# Hosts that let the domain's owner verify it, after which other accounts can't attach it. Each entry:
+# suffix -> (provider, what the owner verifies with, what we can look up in DNS, extra note).
+# Sources (the providers' own docs, checked 2026-10-28):
+#   GitHub Pages  docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/verifying-your-custom-domain-for-github-pages
+#   Vercel        vercel.com/docs/domains/working-with-domains/add-a-domain  ("Verify domain access")
+#   Azure         learn.microsoft.com/en-us/azure/app-service/app-service-web-tutorial-custom-domain  (domain verification ID)
+#   Pantheon      docs.pantheon.io/guides/domains/custom-domains  (verify ownership by DNS TXT or file upload)
+# Netlify's public docs describe no ownership TXT, so it is listed as unconfirmed rather than as claimable.
+OWNERSHIP_VERIFIED = {
+    ".github.io": ("GitHub Pages", "a TXT record at _github-pages-challenge-<owner>.<domain>", None,
+                   "The TXT name contains your GitHub user or organization name, so DNS alone can't confirm it."),
+    ".vercel.app": ("Vercel", "a TXT record at _vercel.<domain>", "vercel",
+                    "Vercel only asks for it when the domain is already in another Vercel account or team."),
+    ".netlify.app": ("Netlify", "Netlify's domain ownership checks", None,
+                     "Netlify's public docs describe no ownership TXT record, so this is unconfirmed either way."),
+    ".azurewebsites.net": ("Azure App Service", "the domain verification ID TXT record at asuid.<host>", "asuid", ""),
+    ".pantheonsite.io": ("Pantheon", "an ownership check (a DNS TXT value or a file upload)", None,
+                         "Domains added before Pantheon enforced the check are exempt."),
+}
+
+
+def ownership_verdict(fqdn, domain, target, lead):
+    """For a CNAME target on a host where the owner can verify the domain: (level, message), else None.
+    `lead` is the finding's first half (what we saw at the target)."""
+    suffix = suffix_match(target, OWNERSHIP_VERIFIED)
+    if suffix is None:
+        return None
+    provider, mech, probe, note = OWNERSHIP_VERIFIED[suffix]
+    if probe == "asuid":
+        name = "asuid." + fqdn
+        if get_records(name, "TXT")[0]:
+            return "INFO", (f"{lead} — {provider}: found a domain verification ID at {name}, so another Azure "
+                            "account should not be able to attach this hostname. Still remove the stale CNAME.")
+        return "FAIL", (f"{lead} — claimable: no TXT record at {name}, so nothing stops another Azure account "
+                        "from adding this hostname to an App Service app (the verification ID is optional). "
+                        "Remove the CNAME, or add the asuid TXT record from the app's custom domain page.")
+    if probe == "vercel":
+        name = "_vercel." + domain
+        if get_records(name, "TXT")[0]:
+            return "INFO", (f"{lead} — {provider}: found a TXT record at {name}, so the domain looks verified and "
+                            "another account should not be able to attach it. Still remove the stale CNAME.")
+    return "WARN", (f"{lead} — possibly claimable: {provider} blocks takeover if the domain is verified with "
+                    f"{mech}; check your account. {note} Remove the CNAME if nothing is published there.").replace("  ", " ")
 
 
 def suffix_match(host, suffixes):
@@ -316,7 +367,12 @@ def check_subdomain(sub, domain, findings):
         is_claimable = suffix_match(target, CLAIMABLE_SUFFIXES) is not None
         verified = VERIFIED_SERVICES.get(suffix_match(target, VERIFIED_SERVICES) or "")
 
-        if not target_a and not target_aaaa:
+        verdict = None
+        if is_claimable and not target_a and not target_aaaa:
+            verdict = ownership_verdict(fqdn, domain, target, f"CNAME -> {target} does NOT resolve")
+        if verdict:
+            findings.append((fqdn, verdict[0], verdict[1]))
+        elif not target_a and not target_aaaa:
             level = "FAIL" if is_claimable else "WARN"
             hint = (" — target hostname pattern matches a claimable cloud service; "
                     "this is the classic subdomain-takeover setup, verify and remove/fix ASAP"
@@ -326,9 +382,13 @@ def check_subdomain(sub, domain, findings):
             findings.append((fqdn, level, f"CNAME -> {target} does NOT resolve{hint}"))
         elif is_claimable:
             is_unclaimed, detail = http_claim_check(target, target_a)
-            if is_unclaimed:
+            verdict = ownership_verdict(fqdn, domain, target, f"CNAME -> {target} resolves at DNS but {detail}") \
+                if is_unclaimed else None
+            if verdict:
+                findings.append((fqdn, verdict[0], verdict[1]))
+            elif is_unclaimed:
                 findings.append((fqdn, "FAIL", f"CNAME -> {target} resolves at DNS but {detail} "
-                                                "— this IS an active subdomain-takeover opportunity, "
+                                                "— claimable: this IS an active subdomain-takeover opportunity, "
                                                 "the cloud platform itself is telling you nobody has "
                                                 "claimed this hostname. Remove the CNAME or claim it now."))
             elif is_unclaimed is False:

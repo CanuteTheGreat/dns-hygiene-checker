@@ -74,8 +74,46 @@ ZONE = {
     ("clean.test", "DS"): ["2371 13 2 0123456789ABCDEF"],
     ("signed-novalidate.test", "DS"): ["1 13 2 00"],
 }
+# Provider classes for an "unclaimed" answer (TestProviderClasses): hosts that let the owner verify the
+# domain, and hosts with no such protection. Every target resolves to LIVE unless noted.
+PROVIDER_HOSTS = {
+    # verification exists, nothing in DNS we can look up (GitHub's TXT name holds the unknown owner)
+    "gh": "ghsite.github.io", "nl": "nlsite.netlify.app", "pa": "pasite.pantheonsite.io",
+    # verification exists and its TXT record is observable: Vercel at _vercel.<domain>, Azure at asuid.<host>
+    "vc": "vcapp.vercel.app", "az": "azapp.azurewebsites.net",
+    # no ownership check in the provider's docs
+    "hk": "hkapp.herokuapp.com", "sg": "sgsite.surge.sh", "rd": "rtdproj.readthedocs.io", "gs": "gsblog.ghost.io",
+}
+for _k, _target in PROVIDER_HOSTS.items():
+    ZONE[(_k + ".prov.test", "CNAME")] = [_target + "."]
+    ZONE[(_target, "A")] = [LIVE]
+# the same Vercel/Azure records, on a domain that published the verification TXT
+ZONE[("vc.prov2.test", "CNAME")] = ["vcapp.vercel.app."]
+ZONE[("_vercel.prov2.test", "TXT")] = ['"vc-domain-verify=vc.prov2.test,abc123"']
+ZONE[("az.prov2.test", "CNAME")] = ["azapp.azurewebsites.net."]
+ZONE[("asuid.az.prov2.test", "TXT")] = ['"0123456789ABCDEF"']
+# deleted app: the target no longer resolves at all (Azure's classic case) / a GitHub Pages target that is gone
+ZONE[("azgone.prov.test", "CNAME")] = ["deleted-app.azurewebsites.net."]
+ZONE[("azgone.prov2.test", "CNAME")] = ["deleted-app.azurewebsites.net."]
+ZONE[("ghgone.prov.test", "CNAME")] = ["gone-user.github.io."]
+# a provider that verifies, whose target answers normally (claimed): stays OK
+ZONE[("ghok.prov.test", "CNAME")] = ["claimed-user.github.io."]
+ZONE[("claimed-user.github.io", "A")] = [LIVE]
+# what each platform shows for a hostname nobody has claimed
+UNCLAIMED_PAGES = {
+    "unclaimed-app.herokuapp.com": "Heroku | No such app",
+    "ghsite.github.io": "<h1>404</h1> There isn't a GitHub Pages site here.",
+    "vcapp.vercel.app": "The deployment could not be found on Vercel. DEPLOYMENT_NOT_FOUND",
+    "nlsite.netlify.app": "Not Found - Request ID: 01H0TEST",
+    "pasite.pantheonsite.io": "404 error unknown site!",
+    "azapp.azurewebsites.net": "Microsoft Azure Web App - Error 404",
+    "hkapp.herokuapp.com": "Heroku | No such app",
+    "sgsite.surge.sh": "project not found",
+    "rtdproj.readthedocs.io": "The link you have followed or the URL that you entered does not exist.",
+    "gsblog.ghost.io": "Site unavailable",
+}
 VALIDATED = {"clean.test"}
-EXISTS_EMPTY = {"nospf.test", "clean.test", "hyg.test", "wild.test", "badwild.test", "notls.test",
+EXISTS_EMPTY = {"prov.test", "prov2.test", "nospf.test", "clean.test", "hyg.test", "wild.test", "badwild.test", "notls.test",
                 "signed-novalidate.test", "disc.test"}
 WILDCARDS = {"wild.test": LIVE, "badwild.test": LIVE, "notls.test": DEAD}
 SERVFAIL = {"broken.flaky.test"}
@@ -155,8 +193,8 @@ class PlatformHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         host = (self.headers.get("Host") or "").split(":")[0]
-        if host == "unclaimed-app.herokuapp.com":
-            code, body = 404, "<html><body>Heroku | No such app</body></html>"
+        if host in UNCLAIMED_PAGES:
+            code, body = 404, "<html><body>%s</body></html>" % UNCLAIMED_PAGES[host]
         else:
             code, body = 200, "<html><body>hello from %s</body></html>" % host
         data = body.encode()
@@ -482,3 +520,100 @@ class TestCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+PROV_SUBS = "gh,nl,pa,vc,az,hk,sg,rd,gs,azgone,ghgone,ghok"
+
+
+class TestProviderClasses(unittest.TestCase):
+    """An \"unclaimed\" answer is a real takeover risk only where the provider doesn't let the domain owner
+    verify the domain. Each provider class gets its own verdict (docs checked 2026-10-28, see the tool's
+    OWNERSHIP_VERIFIED table)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.f1 = by_name(json.loads(run("prov.test", "--subdomains", PROV_SUBS, "--no-apex-checks", "--json").stdout), "prov.test")
+        cls.p2 = run("prov2.test", "--subdomains", "vc,az,azgone", "--no-apex-checks", "--json")
+        cls.f2 = by_name(json.loads(cls.p2.stdout), "prov2.test")
+
+    def one(self, found, name, level):
+        got = found.get(name, [])
+        self.assertEqual([x["level"] for x in got], [level], json.dumps(got, indent=1))
+        return got[0]["message"]
+
+    # -- owner verification exists, can't be looked up: WARN \"possibly claimable\", never a flat \"claimable\"
+    def possibly(self, sub, provider, mechanism):
+        msg = self.one(self.f1, sub + ".prov.test", "WARN")
+        self.assertIn("possibly claimable: %s blocks takeover if the domain is verified with %s; check your account"
+                      % (provider, mechanism), msg)
+        self.assertNotIn("this IS an active subdomain-takeover", msg)
+        return msg
+
+    def test_github_pages_possibly_claimable_txt_name_has_unknown_owner(self):
+        msg = self.possibly("gh", "GitHub Pages", "a TXT record at _github-pages-challenge-<owner>.<domain>")
+        self.assertIn("there isn't a github pages site here", msg)
+        self.assertIn("can't confirm", msg)
+
+    def test_netlify_possibly_claimable_and_marked_unconfirmed(self):
+        msg = self.possibly("nl", "Netlify", "Netlify's domain ownership checks")
+        self.assertIn("unconfirmed", msg)
+
+    def test_pantheon_possibly_claimable_and_notes_pre_enforcement_exemption(self):
+        msg = self.possibly("pa", "Pantheon", "an ownership check (a DNS TXT value or a file upload)")
+        self.assertIn("exempt", msg)
+
+    # -- Vercel: the TXT at _vercel.<domain> is observable
+    def test_vercel_without_txt_is_possibly_claimable(self):
+        msg = self.possibly("vc", "Vercel", "a TXT record at _vercel.<domain>")
+        self.assertIn("already in another Vercel account", msg)
+
+    def test_vercel_with_txt_is_info_not_a_failure(self):
+        msg = self.one(self.f2, "vc.prov2.test", "INFO")
+        self.assertIn("found a TXT record at _vercel.prov2.test", msg)
+        self.assertNotIn("claimable", msg)
+
+    # -- Azure: asuid.<host> is observable, so absence is a real finding
+    def test_azure_without_asuid_is_claimable(self):
+        msg = self.one(self.f1, "az.prov.test", "FAIL")
+        self.assertIn("claimable: no TXT record at asuid.az.prov.test", msg)
+
+    def test_azure_with_asuid_is_info(self):
+        msg = self.one(self.f2, "az.prov2.test", "INFO")
+        self.assertIn("found a domain verification ID at asuid.az.prov2.test", msg)
+        self.assertNotIn("claimable", msg)
+
+    def test_deleted_azure_app_nxdomain_checks_asuid_too(self):
+        self.assertIn("claimable: no TXT record at asuid.azgone.prov.test", self.one(self.f1, "azgone.prov.test", "FAIL"))
+        self.assertIn("deleted-app.azurewebsites.net does NOT resolve", self.f1["azgone.prov.test"][0]["message"])
+        # the asuid record names the host, so it only counts for the host it was published for
+        self.one(self.f2, "azgone.prov2.test", "FAIL")
+
+    def test_deleted_github_pages_target_is_possibly_claimable(self):
+        msg = self.possibly("ghgone", "GitHub Pages", "a TXT record at _github-pages-challenge-<owner>.<domain>")
+        self.assertIn("gone-user.github.io does NOT resolve", msg)
+
+    def test_claimed_verifying_provider_stays_ok(self):
+        self.assertIn("currently claimed", self.one(self.f1, "ghok.prov.test", "OK"))
+
+    # -- no ownership check in the provider's docs: a flat FAIL \"claimable\"
+    def test_providers_without_verification_stay_claimable(self):
+        for sub, needle in (("hk", "no such app"), ("sg", "project not found"),
+                            ("rd", "the link you have followed"), ("gs", "site unavailable")):
+            msg = self.one(self.f1, sub + ".prov.test", "FAIL")
+            self.assertIn("claimable: this IS an active subdomain-takeover opportunity", msg)
+            self.assertIn(needle, msg)
+            self.assertNotIn("possibly", msg)
+
+    def test_s3_bucket_without_ownership_check_stays_claimable(self):
+        # AWS: any account can create the bucket a dangling CNAME names (existing fixture bucket.hyg.test)
+        out = json.loads(run("hyg.test", "--subdomains", "bucket", "--no-apex-checks", "--json").stdout)
+        got = by_name(out, "hyg.test")["bucket.hyg.test"]
+        self.assertEqual([x["level"] for x in got], ["FAIL"])
+        self.assertIn("claimable cloud service", got[0]["message"])
+
+    def test_exit_code_only_counts_claimable_findings(self):
+        # prov2: Vercel INFO + Azure INFO + deleted Azure app FAIL
+        self.assertEqual(self.p2.returncode, 1)
+        only = run("prov.test", "--subdomains", "gh,nl,pa,vc", "--no-apex-checks")
+        self.assertEqual(only.returncode, 0, only.stdout)
+        self.assertIn("possibly claimable", only.stdout)

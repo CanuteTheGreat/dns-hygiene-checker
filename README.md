@@ -10,7 +10,10 @@ Goes beyond a DNS-only check: for claimable-service hostnames that *do* resolve 
 DNS layer (many do, generically), it also does an HTTP-layer fingerprint check, because
 platforms like Heroku and GitHub Pages resolve fine but return a distinctive "no such
 app" / "there isn't a GitHub Pages site here" page when the hostname isn't actually
-claimed — which is the real, currently-exploitable signal.
+claimed. That is a strong signal, but not always a takeover: some hosts (GitHub Pages,
+Vercel, Azure App Service, Pantheon) let the domain's owner verify the domain, after which
+other accounts can't attach it. For those the tool says "possibly claimable" and tells you
+to check your account, instead of calling it claimable.
 
 Zero dependencies beyond the Python standard library. Uses Cloudflare's free
 DNS-over-HTTPS resolver (no local `dig`/`host` binary needed, no API key, no signup).
@@ -58,6 +61,13 @@ What it flags:
   [can-i-take-over-xyz](https://github.com/EdOverflow/can-i-take-over-xyz); ones that verify
   domain ownership, e.g. CloudFront or Fastly, stay WARN)), or that resolves to a platform page saying the hostname is
   unclaimed (FAIL; ~30 HTTP fingerprints)
+- **Providers that let the owner verify the domain** (GitHub Pages, Vercel, Netlify, Azure App
+  Service, Pantheon): an "unclaimed" page there is WARN `possibly claimable: <provider> blocks
+  takeover if the domain is verified with <mechanism>; check your account`, not FAIL. Where the
+  proof is visible in DNS it is looked up: Azure's `asuid.<host>` TXT (found: INFO; missing: FAIL,
+  claimable) and Vercel's `_vercel.<domain>` TXT (found: INFO). GitHub's TXT name contains your
+  account name, so it can't be checked from outside. Hosts with no such check in their docs
+  (Heroku, S3 website endpoints, Surge, Read the Docs, Ghost(Pro) and others) stay FAIL, claimable
 - **NS delegations** whose nameserver hostnames don't resolve (FAIL when none do: whoever
   registers that nameserver's domain controls the subdomain)
 - **MX** (apex and every checked name) and common **SRV** records pointing at names that
@@ -77,9 +87,14 @@ What it flags:
 === example.com ===
   [FAIL ] forgotten.example.com: CNAME -> forgotten-app.herokuapp.com resolves at DNS but
           HTTP 404 with unclaimed-resource fingerprint ("no such app") on
-          forgotten-app.herokuapp.com — this IS an active subdomain-takeover opportunity,
-          the cloud platform itself is telling you nobody has claimed this hostname.
-          Remove the CNAME or claim it now.
+          forgotten-app.herokuapp.com — claimable: this IS an active subdomain-takeover
+          opportunity, the cloud platform itself is telling you nobody has claimed this
+          hostname. Remove the CNAME or claim it now.
+  [WARN ] docs.example.com: CNAME -> old-docs.github.io resolves at DNS but HTTP 404 with
+          unclaimed-resource fingerprint ("there isn't a github pages site here") on
+          old-docs.github.io — possibly claimable: GitHub Pages blocks takeover if the domain
+          is verified with a TXT record at _github-pages-challenge-<owner>.<domain>; check
+          your account. Remove the CNAME if nothing is published there.
   [OK   ] www.example.com: A -> 93.184.216.34 (responsive on 80/443)
 ```
 

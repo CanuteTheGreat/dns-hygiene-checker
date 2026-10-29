@@ -30,6 +30,26 @@
    ]
   },
   {
+   "id": "ownership-verified",
+   "text": "Providers that let the owner verify the domain",
+   "tests": [
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_github_pages_possibly_claimable_txt_name_has_unknown_owner",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_netlify_possibly_claimable_and_marked_unconfirmed",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_pantheon_possibly_claimable_and_notes_pre_enforcement_exemption",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_vercel_without_txt_is_possibly_claimable",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_vercel_with_txt_is_info_not_a_failure",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_azure_without_asuid_is_claimable",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_azure_with_asuid_is_info",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_deleted_azure_app_nxdomain_checks_asuid_too",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_deleted_github_pages_target_is_possibly_claimable",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_claimed_verifying_provider_stays_ok",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_providers_without_verification_stay_claimable",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_s3_bucket_without_ownership_check_stays_claimable",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_exit_code_only_counts_claimable_findings",
+    "tests/test_accuracy.py::TestAgainstCanITakeOverXyz::test_ownership_verified_hosts_are_claimable_with_fingerprints"
+   ]
+  },
+  {
    "id": "ns",
    "text": "NS delegations",
    "tests": [

@@ -131,6 +131,12 @@ class TestAgainstCanITakeOverXyz(unittest.TestCase):
                        if dhc.suffix_match("x." + s, dhc.CLAIMABLE_SUFFIXES) is None)
         self.assertEqual(stray, [])
 
+    def test_ownership_verified_hosts_are_claimable_with_fingerprints(self):
+        # a host in OWNERSHIP_VERIFIED only changes the verdict of an "unclaimed" answer, so it must be one
+        for suffix in dhc.OWNERSHIP_VERIFIED:
+            self.assertEqual(dhc.suffix_match("x" + suffix, dhc.CLAIMABLE_SUFFIXES), suffix)
+            self.assertIsNotNone(dhc.suffix_match("x" + suffix, list(dhc.UNCLAIMED_HTTP_SIGNATURES)), suffix)
+
 
 if __name__ == "__main__":
     unittest.main()

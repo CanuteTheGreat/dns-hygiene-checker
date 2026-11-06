@@ -27,6 +27,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(os.path.dirname(HERE), "dns_hygiene_checker.py")
 TYPES = {"A": 1, "AAAA": 28, "CNAME": 5, "TXT": 16, "MX": 15, "NS": 2, "SRV": 33, "DS": 43, "CAA": 257, "SOA": 6}
 LIVE, DEAD = "127.0.0.1", "127.0.0.2"
+# The zone and the expectations below say LIVE/DEAD; CUR maps them to the addresses this process really uses.
+# Under mutation testing several mutmut children run the suite at once in ONE network namespace, and the
+# platform server needs port 443: each process gets its own loopback pair (127.x.y.1/.2, all of 127/8 is
+# loopback) instead of fighting over 127.0.0.1:443 (colliding children errored out -> random fake kills and
+# a score that drifted between runs).
+CUR = {LIVE: LIVE, DEAD: DEAD}
 
 # (name, type) -> list of record data; names not listed are NXDOMAIN unless a
 # wildcard below matches; SERVFAIL names answer Status 2.
@@ -131,12 +137,12 @@ class DohHandler(BaseHTTPRequestHandler):
             status = 2
         elif any(k[0] == name for k in ZONE) or name in EXISTS_EMPTY:
             status = 0
-            answers = ZONE.get((name, rtype), [])
+            answers = [CUR.get(a, a) for a in ZONE.get((name, rtype), [])]
         else:
             for parent, ip in WILDCARDS.items():
                 if name.endswith("." + parent):
                     status = 0
-                    answers = [ip] if rtype == "A" else []
+                    answers = [CUR.get(ip, ip)] if rtype == "A" else []
         body = json.dumps({"Status": status, "AD": name in VALIDATED, "Answer": [
             {"name": name + ".", "type": TYPES[rtype], "TTL": 60, "data": d} for d in answers]}).encode()
         self.send_response(200)
@@ -222,15 +228,54 @@ def leaf(name, san):
     return ctx
 
 
+def make_pki(directory):
+    """The throwaway CA and the three leaf certificates, written into `directory`."""
+    global TMP, CA, CA_KEY
+    saved = TMP
+    TMP = directory
+    try:
+        CA, CA_KEY = os.path.join(directory, "ca.pem"), os.path.join(directory, "ca.key")
+        openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", CA_KEY, "-out", CA, "-days", "2",
+                "-subj", "/CN=dns-hygiene test CA", "-addext", "keyUsage=critical,keyCertSign,cRLSign")
+        return {"wild": leaf("wild", "DNS:*.wild.test,DNS:wild.test"),
+                "badwild": leaf("badwild", "DNS:www.badwild.test"),
+                "default": leaf("platform", "DNS:*.herokuapp.com,DNS:localhost")}
+    finally:
+        TMP = saved
+
+
+def shared_pki():
+    """Under mutation testing every mutant re-runs setUpModule: build the PKI once per container (flock)."""
+    import fcntl
+    root = os.path.join(tempfile.gettempdir(), "dns-hygiene-test-pki-%d" % os.getuid())
+    os.makedirs(root, exist_ok=True)
+    with open(os.path.join(root, ".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        done = os.path.join(root, "done")
+        if not os.path.exists(done):
+            make_pki(root)
+            open(done, "w").close()
+    return root
+
+
 def setUpModule():
     global TMP, CA, CA_KEY, DOH, DOH_URL, HTTPS, DISC
     TMP = tempfile.mkdtemp()
-    CA, CA_KEY = os.path.join(TMP, "ca.pem"), os.path.join(TMP, "ca.key")
-    openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", CA_KEY, "-out", CA, "-days", "2",
-            "-subj", "/CN=dns-hygiene test CA", "-addext", "keyUsage=critical,keyCertSign,cRLSign")
-    contexts = {"wild": leaf("wild", "DNS:*.wild.test,DNS:wild.test"),
-                "badwild": leaf("badwild", "DNS:www.badwild.test"),
-                "default": leaf("platform", "DNS:*.herokuapp.com,DNS:localhost")}
+    if os.environ.get("MUTANT_UNDER_TEST") is not None:
+        pid = os.getpid()
+        CUR[LIVE] = "127.%d.%d.1" % ((pid >> 8) & 255, pid & 255)
+        CUR[DEAD] = "127.%d.%d.2" % ((pid >> 8) & 255, pid & 255)
+        root = shared_pki()
+        CA, CA_KEY = os.path.join(root, "ca.pem"), os.path.join(root, "ca.key")
+        contexts = {}
+        for name, cn in (("wild", "wild"), ("badwild", "badwild"), ("default", "platform")):
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(os.path.join(root, cn + ".crt"), os.path.join(root, cn + ".key"))
+            contexts[name] = ctx
+    else:
+        CUR[LIVE], CUR[DEAD] = LIVE, DEAD
+        CA, CA_KEY = os.path.join(TMP, "ca.pem"), os.path.join(TMP, "ca.key")
+        contexts = make_pki(TMP)
 
     def pick(sock, server_name, _ctx):
         name = server_name or ""
@@ -241,16 +286,16 @@ def setUpModule():
 
     default = contexts["default"]
     default.sni_callback = pick
-    HTTPS = HTTPServer((LIVE, 443), PlatformHandler)
+    HTTPS = HTTPServer((CUR[LIVE], 443), PlatformHandler)
     HTTPS.socket = default.wrap_socket(HTTPS.socket, server_side=True)
     threading.Thread(target=HTTPS.serve_forever, daemon=True).start()
 
     global DISC_URL
-    DISC = HTTPServer((LIVE, 0), DiscoveryHandler)
+    DISC = HTTPServer((CUR[LIVE], 0), DiscoveryHandler)
     DISC_URL = "http://%s:%d" % DISC.server_address
     threading.Thread(target=DISC.serve_forever, daemon=True).start()
 
-    DOH = HTTPServer((LIVE, 0), DohHandler)
+    DOH = HTTPServer((CUR[LIVE], 0), DohHandler)
     DOH_URL = "http://%s:%d/dns-query" % DOH.server_address
     threading.Thread(target=DOH.serve_forever, daemon=True).start()
 
@@ -303,7 +348,7 @@ class TestChecks(unittest.TestCase):
 
     def test_partly_dead_a_record_set(self):
         msg = self.one("mixed.hyg.test", "WARN")
-        self.assertIn("%s does not answer" % DEAD, msg)
+        self.assertIn("%s does not answer" % CUR[DEAD], msg)
 
     def test_dangling_cname_non_claimable(self):
         msg = self.one("gone.hyg.test", "WARN")
@@ -445,8 +490,8 @@ class TestApexAndDiscovery(unittest.TestCase):
         zone = os.path.join(TMP, "disc.zone")
         with open(zone, "w") as fh:
             fh.write("$ORIGIN disc.test.\n$TTL 300\n@ IN SOA ns1 hostmaster 1 2 3 4 5\n"
-                     "www IN A 127.0.0.1\n  IN AAAA ::1\nzone-only IN CNAME old-thing.example.net.\n"
-                     "deep.sub.disc.test. IN A 127.0.0.1 ; comment\n$ORIGIN lab\nbox IN A 127.0.0.2\n")
+                     "www IN A %s\n  IN AAAA ::1\nzone-only IN CNAME old-thing.example.net.\n"
+                     "deep.sub.disc.test. IN A %s ; comment\n$ORIGIN lab\nbox IN A %s\n" % (CUR[LIVE], CUR[LIVE], CUR[DEAD]))
         p, f = self.disc("--zone-file", zone, "--only-discovered", "--no-apex-checks")
         self.assertIn("zone file: 4 subdomain name(s) discovered", [x["message"] for x in f])
         self.assertIn("zone-only.disc.test", self.checked_names(f))
@@ -471,7 +516,7 @@ class TestCli(unittest.TestCase):
         p = run("clean.test", "--subdomains", "www,nope")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("=== clean.test ===", p.stdout)
-        self.assertIn("[OK   ] www.clean.test: A -> 127.0.0.1 (responsive on 80/443)", p.stdout)
+        self.assertIn("[OK   ] www.clean.test: A -> %s (responsive on 80/443)" % CUR[LIVE], p.stdout)
 
     def test_default_subdomain_list(self):
         p = run("hyg.test", "--json")  # built-in list has www/blog/cdn but none of the takeover names
@@ -492,10 +537,10 @@ class TestCli(unittest.TestCase):
 
     def test_unreachable_resolver_is_error_not_clean(self):
         s = socket.socket()
-        s.bind((LIVE, 0))
+        s.bind((CUR[LIVE], 0))
         port = s.getsockname()[1]
         s.close()
-        p = run("clean.test", "--subdomains", "www", doh="http://%s:%d/dns-query" % (LIVE, port))
+        p = run("clean.test", "--subdomains", "www", doh="http://%s:%d/dns-query" % (CUR[LIVE], port))
         self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
         self.assertIn("[ERROR] clean.test:", p.stdout)
         self.assertIn("INCOMPLETE", p.stdout)
@@ -628,10 +673,8 @@ class TestProviderClasses(unittest.TestCase):
         self.assertNotIn(self.CAVEAT, msg)
 
     def test_every_verifying_provider_in_the_table_gets_the_caveat(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("dhc_under_test", TOOL)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        sys.path.insert(0, os.path.dirname(HERE))
+        import dns_hygiene_checker as mod  # by its real name: mutmut maps tests to mutants through it
         self.assertTrue(mod.OWNERSHIP_VERIFIED)
         for suffix, (provider, _mech, probe, _note) in mod.OWNERSHIP_VERIFIED.items():
             if probe:  # Azure/Vercel: the verdict depends on a DNS lookup, covered by the tests above

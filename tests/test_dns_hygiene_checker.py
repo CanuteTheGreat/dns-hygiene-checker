@@ -666,3 +666,131 @@ class TestProviderClasses(unittest.TestCase):
         only = run("prov.test", "--subdomains", "gh,nl,pa,vc", "--no-apex-checks")
         self.assertEqual(only.returncode, 0, only.stdout)
         self.assertIn("possibly claimable", only.stdout)
+
+
+class TestUnitExact(unittest.TestCase):
+    """Direct calls pinning exact wording/arguments (mutation survivors of the 1.3.x ownership code)."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, os.path.dirname(HERE))
+        import dns_hygiene_checker
+        cls.mod = dns_hygiene_checker
+
+    def with_records(self, table, fn):
+        from unittest import mock
+        calls = []
+
+        def fake(name, rtype):
+            calls.append((name, rtype))
+            return list(table.get((name, rtype), [])), 0
+        with mock.patch.object(self.mod, "get_records", fake):
+            return fn(), calls
+
+    def test_azure_with_asuid_exact(self):
+        (level, msg), calls = self.with_records(
+            {("asuid.x.example.test", "TXT"): ['"id"']},
+            lambda: self.mod.ownership_verdict("x.example.test", "example.test", "a.azurewebsites.net", "LEAD"))
+        self.assertEqual(level, "INFO")
+        self.assertEqual(msg, "LEAD — Azure App Service: found a domain verification ID at asuid.x.example.test, "
+                              "so another Azure account should not be able to attach this hostname. "
+                              "Still remove the stale CNAME.")
+        self.assertEqual(calls, [("asuid.x.example.test", "TXT")])
+
+    def test_azure_without_asuid_exact(self):
+        (level, msg), _ = self.with_records(
+            {}, lambda: self.mod.ownership_verdict("x.example.test", "example.test", "a.azurewebsites.net", "LEAD"))
+        self.assertEqual(level, "FAIL")
+        self.assertEqual(msg, "LEAD — claimable: no TXT record at asuid.x.example.test, so nothing stops another "
+                              "Azure account from adding this hostname to an App Service app (the verification ID "
+                              "is optional). Remove the CNAME, or add the asuid TXT record from the app's custom "
+                              "domain page.")
+
+    def test_vercel_with_txt_exact(self):
+        (level, msg), calls = self.with_records(
+            {("_vercel.example.test", "TXT"): ['"vc"']},
+            lambda: self.mod.ownership_verdict("x.example.test", "example.test", "a.vercel.app", "LEAD"))
+        self.assertEqual(level, "INFO")
+        self.assertEqual(msg, "LEAD — Vercel: found a TXT record at _vercel.example.test, so the domain looks "
+                              "verified and another account should not be able to attach it. "
+                              "Still remove the stale CNAME.")
+        self.assertEqual(calls, [("_vercel.example.test", "TXT")])
+
+    def test_vercel_without_txt_exact(self):
+        for page, caveat in ((False, ""), (True, self.mod.PAGE_CAVEAT + " ")):
+            (level, msg), _ = self.with_records(
+                {}, lambda: self.mod.ownership_verdict("x.example.test", "example.test", "a.vercel.app", "LEAD",
+                                                       page=page))
+            self.assertEqual(level, "WARN")
+            self.assertEqual(msg, "LEAD — possibly claimable: Vercel blocks takeover if the domain is verified with "
+                                  "a TXT record at _vercel.<domain>; check your account. " + caveat +
+                                  "Vercel only asks for it when the domain is already in another Vercel account "
+                                  "or team. Remove the CNAME if nothing is published there.")
+
+    def test_github_pages_warn_exact_with_and_without_page(self):
+        (level, msg), calls = self.with_records(
+            {}, lambda: self.mod.ownership_verdict("x.example.test", "example.test", "u.github.io", "LEAD"))
+        self.assertEqual(level, "WARN")
+        self.assertEqual(calls, [])
+        self.assertEqual(msg, "LEAD — possibly claimable: GitHub Pages blocks takeover if the domain is verified with "
+                              "a TXT record at _github-pages-challenge-<owner>.<domain>; check your account. "
+                              "The TXT name contains your GitHub user or organization name, so DNS alone can't "
+                              "confirm it. Remove the CNAME if nothing is published there.")
+        (_l, msg2), _ = self.with_records(
+            {}, lambda: self.mod.ownership_verdict("x.example.test", "example.test", "u.github.io", "LEAD", page=True))
+        self.assertIn("check your account. " + self.mod.PAGE_CAVEAT + " The TXT name", msg2)
+
+    def test_not_an_ownership_host_is_none(self):
+        self.assertIsNone(self.mod.ownership_verdict("x.example.test", "example.test", "a.example.net", "LEAD"))
+
+    def test_get_ad_and_status(self):
+        from unittest import mock
+        seen = []
+
+        def fake(name, rtype):
+            seen.append((name, rtype))
+            return {"AD": True, "Status": 3}
+        with mock.patch.object(self.mod, "doh_query", fake):
+            self.assertEqual(self.mod.get_ad("example.test"), (True, 3))
+        self.assertEqual(seen, [("example.test", "SOA")])
+        with mock.patch.object(self.mod, "doh_query", lambda n, t: {"Status": 0}):
+            self.assertEqual(self.mod.get_ad("example.test"), (False, 0))
+        with mock.patch.object(self.mod, "doh_query", lambda n, t: None):
+            self.assertEqual(self.mod.get_ad("example.test"), (None, None))
+
+    def test_resolves_asks_a_then_aaaa(self):
+        from unittest import mock
+        seen = []
+
+        def fake(name, rtype):
+            seen.append((name, rtype))
+            return ([], 0) if rtype == "A" else (["::1"], 0)
+        with mock.patch.object(self.mod, "get_records", fake):
+            self.assertTrue(self.mod.resolves("h.test"))
+        self.assertEqual(seen, [("h.test", "A"), ("h.test", "AAAA")])
+        with mock.patch.object(self.mod, "get_records", lambda n, t: ([], 3)):
+            self.assertFalse(self.mod.resolves("h.test"))
+
+    def test_txt_value_joins_quoted_strings(self):
+        self.assertEqual(self.mod.txt_value('"v=spf1 a" " -all"'), "v=spf1 a -all")
+        self.assertEqual(self.mod.txt_value('"a\\"b"'), 'a\\"b')
+        self.assertEqual(self.mod.txt_value("bare"), "bare")
+
+
+class TestHelpAndJson(unittest.TestCase):
+    def test_help_documents_every_public_option_and_hides_test_hooks(self):
+        out = run("--help").stdout
+        for needle in ("comma-separated list of subdomains to check instead of the built-in common list",
+                       "also check every subdomain found in Certificate Transparency logs (crt.sh, Cert Spotter)",
+                       "also check every name in this BIND-style zone file",
+                       "FILE",
+                       "also check every record in the domain's Cloudflare zone (CLOUDFLARE_API_TOKEN)",
+                       "skip the MX/SRV/CAA/DNSSEC checks"):
+            self.assertIn(needle, " ".join(out.split()))
+        self.assertNotIn("--ct-url", out)
+        self.assertNotIn("--certspotter-url", out)
+
+    def test_json_output_is_indented_two_spaces(self):
+        out = run("hyg.test", "--subdomains", "www", "--no-apex-checks", "--json").stdout
+        self.assertIn('\n  "hyg.test": [', out)
+        self.assertIn('\n    {\n      "', out)

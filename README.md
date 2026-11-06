@@ -13,7 +13,9 @@ app" / "there isn't a GitHub Pages site here" page when the hostname isn't actua
 claimed. That is a strong signal, but not always a takeover: some hosts (GitHub Pages,
 Vercel, Azure App Service, Pantheon) let the domain's owner verify the domain, after which
 other accounts can't attach it. For those the tool says "possibly claimable" and tells you
-to check your account, instead of calling it claimable.
+to check your account, instead of calling it claimable. The "unclaimed" page only means nothing
+is published there; it looks the same on a verified domain that nobody else can claim, and the
+finding says so.
 
 Zero dependencies beyond the Python standard library. Uses Cloudflare's free
 DNS-over-HTTPS resolver (no local `dig`/`host` binary needed, no API key, no signup).
@@ -22,7 +24,7 @@ DNS-over-HTTPS resolver (no local `dig`/`host` binary needed, no API key, no sig
 
 ```sh
 pipx install git+https://git.canutethegreat.com/CanuteTheGreat/dns-hygiene-checker.git        # latest release branch; puts `dns-hygiene-checker` on PATH
-pipx install git+https://git.canutethegreat.com/CanuteTheGreat/dns-hygiene-checker.git@v1.2.1  # a pinned release
+pipx install git+https://git.canutethegreat.com/CanuteTheGreat/dns-hygiene-checker.git@v1.3.1  # a pinned release
 brew install canutethegreat/errant-tools/dns-hygiene-checker   # after: brew tap canutethegreat/errant-tools https://git.canutethegreat.com/CanuteTheGreat/homebrew-errant-tools
 scoop install errant-tools/dns-hygiene-checker                 # after: scoop bucket add errant-tools https://git.canutethegreat.com/CanuteTheGreat/scoop-errant-tools
 ```
@@ -63,7 +65,8 @@ What it flags:
   unclaimed (FAIL; ~30 HTTP fingerprints)
 - **Providers that let the owner verify the domain** (GitHub Pages, Vercel, Netlify, Azure App
   Service, Pantheon): an "unclaimed" page there is WARN `possibly claimable: <provider> blocks
-  takeover if the domain is verified with <mechanism>; check your account`, not FAIL. Where the
+  takeover if the domain is verified with <mechanism>; check your account`, not FAIL, followed by
+  `Not published; may still be unclaimable if the domain is verified`. Where the
   proof is visible in DNS it is looked up: Azure's `asuid.<host>` TXT (found: INFO; missing: FAIL,
   claimable) and Vercel's `_vercel.<domain>` TXT (found: INFO). GitHub's TXT name contains your
   account name, so it can't be checked from outside. Hosts with no such check in their docs
@@ -94,7 +97,8 @@ What it flags:
           unclaimed-resource fingerprint ("there isn't a github pages site here") on
           old-docs.github.io — possibly claimable: GitHub Pages blocks takeover if the domain
           is verified with a TXT record at _github-pages-challenge-<owner>.<domain>; check
-          your account. Remove the CNAME if nothing is published there.
+          your account. Not published; may still be unclaimable if the domain is verified: the
+          unclaimed page looks the same either way. Remove the CNAME if nothing is published there.
   [OK   ] www.example.com: A -> 93.184.216.34 (responsive on 80/443)
 ```
 

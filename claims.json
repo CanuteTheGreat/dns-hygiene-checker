@@ -46,6 +46,12 @@
     "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_providers_without_verification_stay_claimable",
     "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_s3_bucket_without_ownership_check_stays_claimable",
     "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_exit_code_only_counts_claimable_findings",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_verifying_providers_say_the_page_only_means_not_published",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_github_pages_caveat_follows_the_404_signal_and_never_becomes_fail",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_providers_without_verification_do_not_get_the_caveat",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_caveat_only_when_a_page_was_seen",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_verified_vercel_domain_with_unclaimed_page_is_not_a_warning",
+    "tests/test_dns_hygiene_checker.py::TestProviderClasses::test_every_verifying_provider_in_the_table_gets_the_caveat",
     "tests/test_accuracy.py::TestAgainstCanITakeOverXyz::test_ownership_verified_hosts_are_claimable_with_fingerprints"
    ]
   },

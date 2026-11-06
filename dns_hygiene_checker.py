@@ -13,7 +13,8 @@ flags a few other everyday DNS-hygiene footguns:
   - the same, when the platform answers with its "unclaimed" page. Some platforms let
     the domain owner verify the domain (GitHub Pages, Vercel, Azure App Service, Pantheon),
     after which no other account can attach it. There the finding says "possibly
-    claimable ... check your account" instead of "claimable"; it says "claimable"
+    claimable ... check your account" instead of "claimable", and adds that the unclaimed page only
+    means nothing is published (it looks the same on a verified domain); it says "claimable"
     only where the provider's docs describe no such protection, or the record that
     would show it (Azure's asuid TXT) is missing
   - A records where some or all addresses no longer answer on port 80/443 (stale infra)
@@ -47,7 +48,7 @@ Usage:
 Exit codes: 0 = no FAIL findings, 1 = at least one FAIL (takeover risk),
 2 = the DNS-over-HTTPS resolver could not be queried (report incomplete).
 """
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 import argparse
 import json
@@ -113,7 +114,7 @@ VERIFIED_SERVICES = {
 
 # Hosts that let the domain's owner verify it, after which other accounts can't attach it. Each entry:
 # suffix -> (provider, what the owner verifies with, what we can look up in DNS, extra note).
-# Sources (the providers' own docs, checked 2026-10-28):
+# Sources (the providers' own docs, checked 2026-10-28, re-checked 2026-11-06):
 #   GitHub Pages  docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/verifying-your-custom-domain-for-github-pages
 #   Vercel        vercel.com/docs/domains/working-with-domains/add-a-domain  ("Verify domain access")
 #   Azure         learn.microsoft.com/en-us/azure/app-service/app-service-web-tutorial-custom-domain  (domain verification ID)
@@ -132,9 +133,17 @@ OWNERSHIP_VERIFIED = {
 }
 
 
-def ownership_verdict(fqdn, domain, target, lead):
+# Said wherever an "unclaimed" page is reported for a host that lets the owner verify the domain: the page
+# only means nothing is published at that address, and it looks the same on a verified domain that nobody
+# else can claim.
+PAGE_CAVEAT = ("Not published; may still be unclaimable if the domain is verified: the unclaimed page "
+               "looks the same either way.")
+
+
+def ownership_verdict(fqdn, domain, target, lead, page=False):
     """For a CNAME target on a host where the owner can verify the domain: (level, message), else None.
-    `lead` is the finding's first half (what we saw at the target)."""
+    `lead` is the finding's first half (what we saw at the target); `page` is True when the platform's
+    unclaimed page was seen (as opposed to the target not resolving at all)."""
     suffix = suffix_match(target, OWNERSHIP_VERIFIED)
     if suffix is None:
         return None
@@ -152,8 +161,10 @@ def ownership_verdict(fqdn, domain, target, lead):
         if get_records(name, "TXT")[0]:
             return "INFO", (f"{lead} — {provider}: found a TXT record at {name}, so the domain looks verified and "
                             "another account should not be able to attach it. Still remove the stale CNAME.")
+    caveat = PAGE_CAVEAT + " " if page else ""
     return "WARN", (f"{lead} — possibly claimable: {provider} blocks takeover if the domain is verified with "
-                    f"{mech}; check your account. {note} Remove the CNAME if nothing is published there.").replace("  ", " ")
+                    f"{mech}; check your account. {caveat}{note} Remove the CNAME if nothing is published "
+                    "there.").replace("  ", " ")
 
 
 def suffix_match(host, suffixes):
@@ -382,8 +393,8 @@ def check_subdomain(sub, domain, findings):
             findings.append((fqdn, level, f"CNAME -> {target} does NOT resolve{hint}"))
         elif is_claimable:
             is_unclaimed, detail = http_claim_check(target, target_a)
-            verdict = ownership_verdict(fqdn, domain, target, f"CNAME -> {target} resolves at DNS but {detail}") \
-                if is_unclaimed else None
+            verdict = ownership_verdict(fqdn, domain, target, f"CNAME -> {target} resolves at DNS but {detail}",
+                                        page=True) if is_unclaimed else None
             if verdict:
                 findings.append((fqdn, verdict[0], verdict[1]))
             elif is_unclaimed:

@@ -595,6 +595,55 @@ class TestProviderClasses(unittest.TestCase):
     def test_claimed_verifying_provider_stays_ok(self):
         self.assertIn("currently claimed", self.one(self.f1, "ghok.prov.test", "OK"))
 
+    # -- verified domains: the unclaimed page looks the same, so every such finding must say so (1.3.1)
+    CAVEAT = "Not published; may still be unclaimable if the domain is verified"
+
+    def test_verifying_providers_say_the_page_only_means_not_published(self):
+        for sub in ("gh", "nl", "pa", "vc"):
+            msg = self.one(self.f1, sub + ".prov.test", "WARN")
+            self.assertIn(self.CAVEAT, msg, sub)
+            self.assertIn("the unclaimed page looks the same either way", msg, sub)
+            # the caveat sits next to the claimable signal, not before it
+            self.assertLess(msg.index("possibly claimable"), msg.index(self.CAVEAT), sub)
+
+    def test_github_pages_caveat_follows_the_404_signal_and_never_becomes_fail(self):
+        msg = self.one(self.f1, "gh.prov.test", "WARN")
+        self.assertLess(msg.index("there isn't a github pages site here"), msg.index(self.CAVEAT))
+        self.assertNotIn("this IS an active subdomain-takeover", msg)
+        self.assertNotIn("claimable: this IS", msg)
+
+    def test_providers_without_verification_do_not_get_the_caveat(self):
+        for sub in ("hk", "sg", "rd", "gs"):
+            self.assertNotIn(self.CAVEAT, self.one(self.f1, sub + ".prov.test", "FAIL"), sub)
+
+    def test_caveat_only_when_a_page_was_seen(self):
+        # the deleted GitHub Pages target has no page at all: nothing to caveat, still possibly claimable
+        msg = self.possibly("ghgone", "GitHub Pages", "a TXT record at _github-pages-challenge-<owner>.<domain>")
+        self.assertNotIn(self.CAVEAT, msg)
+
+    def test_verified_vercel_domain_with_unclaimed_page_is_not_a_warning(self):
+        # the page is there, but the _vercel TXT shows the domain is verified: INFO, no claimable wording
+        msg = self.one(self.f2, "vc.prov2.test", "INFO")
+        self.assertNotIn("claimable", msg)
+        self.assertNotIn(self.CAVEAT, msg)
+
+    def test_every_verifying_provider_in_the_table_gets_the_caveat(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("dhc_under_test", TOOL)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertTrue(mod.OWNERSHIP_VERIFIED)
+        for suffix, (provider, _mech, probe, _note) in mod.OWNERSHIP_VERIFIED.items():
+            if probe:  # Azure/Vercel: the verdict depends on a DNS lookup, covered by the tests above
+                continue
+            level, msg = mod.ownership_verdict("x.example.test", "example.test", "x" + suffix,
+                                               "CNAME -> x%s resolves at DNS but HTTP 404" % suffix, page=True)
+            self.assertEqual(level, "WARN", provider)
+            self.assertIn(mod.PAGE_CAVEAT, msg, provider)
+        for suffix in ("a.github.io", "a.netlify.app", "a.pantheonsite.io"):
+            _level, msg = mod.ownership_verdict("x.example.test", "example.test", suffix, "lead", page=False)
+            self.assertNotIn(mod.PAGE_CAVEAT, msg)
+
     # -- no ownership check in the provider's docs: a flat FAIL \"claimable\"
     def test_providers_without_verification_stay_claimable(self):
         for sub, needle in (("hk", "no such app"), ("sg", "project not found"),

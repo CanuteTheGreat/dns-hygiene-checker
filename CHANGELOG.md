@@ -2,6 +2,17 @@
 
 All notable changes. Versions are git tags; each tag has a Forgejo release with checksums.
 
+## 1.3.1 - 2026-11-06
+
+- The "possibly claimable" finding (GitHub Pages, Vercel, Netlify, Pantheon) now says what the unclaimed
+  page does and doesn't show: `Not published; may still be unclaimable if the domain is verified: the
+  unclaimed page looks the same either way.` A verified GitHub Pages domain still returns the 404 while
+  other accounts can't publish to it, so the 404 alone is never a takeover verdict. Only added when the
+  page was actually seen, not when the target doesn't resolve. Verdicts and exit codes are unchanged.
+- Provider docs re-checked 2026-11-06.
+- Tests: the caveat for every provider that supports domain verification, absence for those that don't,
+  and the verified-domain cases (Vercel `_vercel` TXT, Azure `asuid` TXT) staying INFO.
+
 ## 1.3.0 - 2026-10-28
 
 - An "unclaimed" page is no longer always reported as claimable. GitHub Pages, Vercel, Netlify, Azure App

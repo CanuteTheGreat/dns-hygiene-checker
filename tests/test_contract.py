@@ -307,6 +307,9 @@ class TestHelpersAndWire(unittest.TestCase):
         self.assertEqual(sm("s3-website-eu-west-1.amazonaws.com", sufs), ".s3-website")
         self.assertIsNone(sm("xs3-website.example.com", sufs))
         self.assertIsNone(sm("example.com", sufs))
+        # only dots are stripped from a suffix: a leading X is part of it (hosts are lowercased, so no match)
+        self.assertIsNone(sm("foo.example", {"Xfoo.example": 1}))
+        self.assertEqual(sm("a.xfoo.example", {"..xfoo.example": 1}), "..xfoo.example")
 
     def test_relative_names(self):
         names = [" WWW.Disc.Test. ", "*.Wild.disc.test", "a b.disc.test", "disc.test", "x.other.test", "*.disc.test",
@@ -550,6 +553,55 @@ def setattr_all(mod, saved):
 
 def setattr_all_handlers(doh, plat, disc):
     base.DohHandler.do_GET, base.PlatformHandler.do_GET, base.DiscoveryHandler.do_GET = doh, plat, disc
+
+
+class TestWildcardCertVerdict(unittest.TestCase):
+    """wildcard_cert_verdict()'s TLS outcomes with a fake socket and context (no network)."""
+
+    def run_verdict(self, wrap_exc=None):
+        from unittest import mock
+        mod = load_tool()
+        raw = mock.MagicMock()
+
+        class Ctx:
+            def wrap_socket(self, sock, server_hostname=None):
+                self.args = (sock, server_hostname)
+                if wrap_exc is not None:
+                    raise wrap_exc
+                return mock.MagicMock()
+
+        ctx = Ctx()
+        with mock.patch.object(mod.socket, "create_connection", return_value=raw), \
+                mock.patch.object(mod.ssl, "create_default_context", return_value=ctx):
+            out = mod.wildcard_cert_verdict("probe.example.test", ["192.0.2.8"])
+        self.assertEqual(ctx.args, (raw, "probe.example.test"))
+        raw.close.assert_called_once_with()
+        return out
+
+    def test_valid(self):
+        self.assertIs(self.run_verdict(), True)
+
+    def test_verify_message_is_the_reason(self):
+        import ssl
+        e = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] boom")
+        e.verify_message = "Hostname mismatch, certificate is not valid for 'probe.example.test'."
+        self.assertEqual(self.run_verdict(e), "Hostname mismatch, certificate is not valid for 'probe.example.test'.")
+
+    def test_no_verify_message_falls_back_to_str(self):
+        import ssl
+        for msg in (None, ""):
+            e = ssl.SSLCertVerificationError(1, "bad cert chain")
+            e.verify_message = msg
+            self.assertEqual(self.run_verdict(e), str(e))
+            self.assertNotEqual(self.run_verdict(e), "None")
+        e = ssl.SSLCertVerificationError(1, "bad cert chain")
+        vars(e).pop("verify_message", None)
+        self.assertEqual(self.run_verdict(e), str(e))
+
+    def test_handshake_failure(self):
+        import ssl
+        self.assertEqual(self.run_verdict(ssl.SSLError("boom")), "TLS handshake failed: %s" % ssl.SSLError("boom"))
+        self.assertEqual(self.run_verdict(OSError("reset")), "TLS handshake failed: reset")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 {
  "id": "dns-hygiene-checker",
  "last_full": "2026-11-14",
- "sha": "b3f16175d7d28921a88040cf158eff0fed7b82b6",
+ "sha": "3d4343b46ba43b981eded9aa90847b15f3c67256",
  "survivors": [
   "dns_hygiene_checker.x__http_json__mutmut_11",
   "dns_hygiene_checker.x__http_json__mutmut_12",

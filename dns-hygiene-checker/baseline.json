@@ -1,6 +1,6 @@
 {
  "id": "dns-hygiene-checker",
- "last_full": "2026-11-14",
+ "last_full": "2026-11-21",
  "sha": "894f5cc7e7bebd528165b10dfe14988cd07843d6",
  "survivors": [
   "dns_hygiene_checker.x__http_json__mutmut_11",
@@ -43,6 +43,7 @@
   "dns_hygiene_checker.x_check_delegation__mutmut_30",
   "dns_hygiene_checker.x_check_delegation__mutmut_33",
   "dns_hygiene_checker.x_check_mx__mutmut_11",
+  "dns_hygiene_checker.x_check_mx__mutmut_15",
   "dns_hygiene_checker.x_check_mx__mutmut_17",
   "dns_hygiene_checker.x_check_mx__mutmut_18",
   "dns_hygiene_checker.x_check_mx__mutmut_22",

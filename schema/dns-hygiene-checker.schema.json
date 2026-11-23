@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "dns-hygiene-checker --json output",
+  "type": "object",
+  "required": ["schema_version", "tool", "version", "exit_code", "results"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "tool": {"type": "string", "const": "dns-hygiene-checker"},
+    "version": {"type": "string"},
+    "exit_code": {"type": "integer", "enum": [0, 1, 2, 3]},
+    "results": {
+      "type": "object",
+      "description": "domain -> list of findings",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["name", "level", "message"],
+          "properties": {
+            "name": {"type": "string"},
+            "level": {"type": "string", "enum": ["OK", "INFO", "WARN", "FAIL", "ERROR"]},
+            "message": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}

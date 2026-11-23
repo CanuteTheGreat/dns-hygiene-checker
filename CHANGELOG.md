@@ -2,6 +2,21 @@
 
 All notable changes. Versions are git tags; each tag has a Forgejo release with checksums.
 
+## 2.0.0 - 2026-11-23
+
+- Shared Errant Solutions CLI contract: exit codes 0 clean, 1 findings, 2 usage/input error, 3 unexpected
+  internal error (an uncaught exception is now exit 3 with a message on stderr, not a traceback). The
+  documented legacy code 2 for "resolver or discovery source could not be queried" is kept.
+- New `--quiet` / `-q`: nothing on stdout, exit code and stderr only.
+- `--json` now has the contract keys `schema_version` (1), `tool`, `version`, `exit_code`; JSON Schema in
+  `schema/dns-hygiene-checker.schema.json`; docs in `docs/CLI-CONTRACT.md`.
+- Tests: `tests/test_cli_contract.py` (exit codes, schema validation, quiet, stderr).
+
+### Changed (breaking)
+
+- `--json` no longer prints the domain map at the top level; it is under the `results` key of the new
+  top-level object. JSON consumers must read `results`.
+
 ## 1.3.1 - 2026-11-06
 
 - The "possibly claimable" finding (GitHub Pages, Vercel, Netlify, Pantheon) now says what the unclaimed

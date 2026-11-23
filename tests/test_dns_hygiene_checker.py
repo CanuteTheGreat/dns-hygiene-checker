@@ -314,6 +314,11 @@ def run(*args, doh=None):
                           capture_output=True, text=True, env=env, timeout=240)
 
 
+def jres(text):
+    """The `results` object ({domain: [findings]}) of the --json document."""
+    return json.loads(text)["results"]
+
+
 def by_name(results, domain):
     out = {}
     for f in results[domain]:
@@ -329,7 +334,7 @@ class TestChecks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.p = run("hyg.test", "--subdomains", SUBS, "--json")
-        cls.res = json.loads(cls.p.stdout)
+        cls.res = jres(cls.p.stdout)
         cls.f = by_name(cls.res, "hyg.test")
 
     def one(self, name, level):
@@ -426,7 +431,7 @@ class TestWildcard(unittest.TestCase):
     def wildcard_finding(self, domain):
         p = run(domain, "--subdomains", "www", "--json")
         self.assertIn(p.returncode, (0, 1), p.stderr)
-        return [x for x in json.loads(p.stdout)[domain] if "Wildcard" in x["message"]]
+        return [x for x in jres(p.stdout)[domain] if "Wildcard" in x["message"]]
 
     def test_wildcard_with_covering_cert_ok(self):
         f = self.wildcard_finding("wild.test")
@@ -445,22 +450,22 @@ class TestWildcard(unittest.TestCase):
 
 class TestApexAndDiscovery(unittest.TestCase):
     def test_caa_and_dnssec_present(self):
-        res = json.loads(run("clean.test", "--subdomains", "www", "--json").stdout)
+        res = jres(run("clean.test", "--subdomains", "www", "--json").stdout)
         f = by_name(res, "clean.test")
         self.assertEqual(f["CAA"][0]["level"], "OK")
         self.assertIn("letsencrypt.org", f["CAA"][0]["message"])
         self.assertIn("issuewild: 1", f["CAA"][0]["message"])
         self.assertNotIn("no iodef", f["CAA"][0]["message"])
         self.assertEqual(f["DNSSEC"][0]["level"], "OK")
-        f = by_name(json.loads(run("signed-novalidate.test", "--subdomains", "x", "--json").stdout), "signed-novalidate.test")
+        f = by_name(jres(run("signed-novalidate.test", "--subdomains", "x", "--json").stdout), "signed-novalidate.test")
         self.assertEqual(f["DNSSEC"][0]["level"], "INFO")
         p = run("clean.test", "--subdomains", "www", "--json", "--no-apex-checks")
-        self.assertNotIn("CAA", by_name(json.loads(p.stdout), "clean.test"))
+        self.assertNotIn("CAA", by_name(jres(p.stdout), "clean.test"))
 
     def disc(self, *args):
         p = run("disc.test", "--json", "--ct-url", DISC_URL + "/crtsh/", "--certspotter-url", DISC_URL + "/certspotter",
                 "--cloudflare-api", DISC_URL + "/cf", *args)
-        return p, json.loads(p.stdout)["disc.test"]
+        return p, jres(p.stdout)["disc.test"]
 
     def checked_names(self, findings):
         return {x["name"] for x in findings}
@@ -520,7 +525,7 @@ class TestCli(unittest.TestCase):
 
     def test_default_subdomain_list(self):
         p = run("hyg.test", "--json")  # built-in list has www/blog/cdn but none of the takeover names
-        f = by_name(json.loads(p.stdout), "hyg.test")
+        f = by_name(jres(p.stdout), "hyg.test")
         for name in ("www.hyg.test", "blog.hyg.test", "cdn.hyg.test"):
             self.assertIn(name, f)
         self.assertNotIn("takeover.hyg.test", f)
@@ -533,7 +538,7 @@ class TestCli(unittest.TestCase):
 
     def test_multiple_domains_and_url_forms(self):
         p = run("https://clean.test/", "wild.test", "--subdomains", "www", "--json")
-        self.assertEqual(sorted(json.loads(p.stdout)), ["clean.test", "wild.test"])
+        self.assertEqual(sorted(jres(p.stdout)), ["clean.test", "wild.test"])
 
     def test_unreachable_resolver_is_error_not_clean(self):
         s = socket.socket()
@@ -549,7 +554,7 @@ class TestCli(unittest.TestCase):
     def test_servfail_is_error(self):
         p = run("flaky.test", "--subdomains", "broken", "--json")
         self.assertEqual(p.returncode, 2, p.stdout)
-        levels = [x["level"] for x in json.loads(p.stdout)["flaky.test"]]
+        levels = [x["level"] for x in jres(p.stdout)["flaky.test"]]
         self.assertIn("ERROR", levels)
 
     def test_version(self):
@@ -577,9 +582,9 @@ class TestProviderClasses(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.f1 = by_name(json.loads(run("prov.test", "--subdomains", PROV_SUBS, "--no-apex-checks", "--json").stdout), "prov.test")
+        cls.f1 = by_name(jres(run("prov.test", "--subdomains", PROV_SUBS, "--no-apex-checks", "--json").stdout), "prov.test")
         cls.p2 = run("prov2.test", "--subdomains", "vc,az,azgone", "--no-apex-checks", "--json")
-        cls.f2 = by_name(json.loads(cls.p2.stdout), "prov2.test")
+        cls.f2 = by_name(jres(cls.p2.stdout), "prov2.test")
 
     def one(self, found, name, level):
         got = found.get(name, [])
@@ -698,7 +703,7 @@ class TestProviderClasses(unittest.TestCase):
 
     def test_s3_bucket_without_ownership_check_stays_claimable(self):
         # AWS: any account can create the bucket a dangling CNAME names (existing fixture bucket.hyg.test)
-        out = json.loads(run("hyg.test", "--subdomains", "bucket", "--no-apex-checks", "--json").stdout)
+        out = jres(run("hyg.test", "--subdomains", "bucket", "--no-apex-checks", "--json").stdout)
         got = by_name(out, "hyg.test")["bucket.hyg.test"]
         self.assertEqual([x["level"] for x in got], ["FAIL"])
         self.assertIn("claimable cloud service", got[0]["message"])
@@ -835,5 +840,5 @@ class TestHelpAndJson(unittest.TestCase):
 
     def test_json_output_is_indented_two_spaces(self):
         out = run("hyg.test", "--subdomains", "www", "--no-apex-checks", "--json").stdout
-        self.assertIn('\n  "hyg.test": [', out)
-        self.assertIn('\n    {\n      "', out)
+        self.assertIn('\n    "hyg.test": [', out)
+        self.assertIn('\n      {\n        "', out)

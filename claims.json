@@ -189,7 +189,11 @@
    "text": "dns-hygiene-checker example.com --json",
    "tests": [
     "tests/test_dns_hygiene_checker.py::TestChecks::test_fail_exit_code",
-    "tests/test_dns_hygiene_checker.py::TestChecks::test_findings_sorted_by_severity"
+    "tests/test_dns_hygiene_checker.py::TestChecks::test_findings_sorted_by_severity",
+    "tests/test_cli_contract.py::TestJson::test_clean",
+    "tests/test_cli_contract.py::TestJson::test_findings",
+    "tests/test_cli_contract.py::TestJson::test_legacy_2_document",
+    "tests/test_cli_contract.py::TestJson::test_schema_rejects_missing_contract_key"
    ],
    "flags": [
     "--json"
@@ -202,7 +206,14 @@
     "tests/test_dns_hygiene_checker.py::TestChecks::test_fail_exit_code",
     "tests/test_dns_hygiene_checker.py::TestCli::test_text_output_and_clean_exit",
     "tests/test_dns_hygiene_checker.py::TestCli::test_unreachable_resolver_is_error_not_clean",
-    "tests/test_dns_hygiene_checker.py::TestCli::test_servfail_is_error"
+    "tests/test_dns_hygiene_checker.py::TestCli::test_servfail_is_error",
+    "tests/test_cli_contract.py::TestExitCodes::test_clean_is_0",
+    "tests/test_cli_contract.py::TestExitCodes::test_findings_is_1",
+    "tests/test_cli_contract.py::TestExitCodes::test_legacy_unreachable_resolver_is_2",
+    "tests/test_cli_contract.py::TestExitCodes::test_legacy_unreadable_zone_file_is_2",
+    "tests/test_cli_contract.py::TestExitCodes::test_findings_beat_legacy_2",
+    "tests/test_cli_contract.py::TestExitCodes::test_unknown_flag_is_2_with_empty_stdout",
+    "tests/test_cli_contract.py::TestExitCodes::test_internal_error_is_3_with_message_on_stderr"
    ]
   },
   {
@@ -257,6 +268,29 @@
    "tests": [
     ".forgejo/workflows/test.yml#python: [\"3.7\"",
     ".forgejo/workflows/nightly.yml#python: [\"3.7\""
+   ]
+  },
+  {
+   "id": "quiet",
+   "text": "`--quiet` (`-q`) prints nothing on stdout",
+   "tests": [
+    "tests/test_cli_contract.py::TestQuiet::test_quiet_clean",
+    "tests/test_cli_contract.py::TestQuiet::test_quiet_findings_keep_exit_code",
+    "tests/test_cli_contract.py::TestQuiet::test_quiet_wins_over_json",
+    "tests/test_cli_contract.py::TestQuiet::test_quiet_hides_incomplete_report_but_keeps_exit_code",
+    "tests/test_cli_contract.py::TestQuiet::test_not_quiet_prints_report"
+   ],
+   "flags": [
+    "--quiet"
+   ]
+  },
+  {
+   "id": "json-contract",
+   "text": "`--json` prints exactly one JSON object",
+   "tests": [
+    "tests/test_cli_contract.py::TestJson::test_clean",
+    "tests/test_cli_contract.py::TestJson::test_findings",
+    "tests/test_cli_contract.py::TestJson::test_usage_error_leaves_stdout_empty"
    ]
   }
  ]

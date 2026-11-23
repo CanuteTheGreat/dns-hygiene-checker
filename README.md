@@ -24,7 +24,7 @@ DNS-over-HTTPS resolver (no local `dig`/`host` binary needed, no API key, no sig
 
 ```sh
 pipx install git+https://git.canutethegreat.com/CanuteTheGreat/dns-hygiene-checker.git        # latest release branch; puts `dns-hygiene-checker` on PATH
-pipx install git+https://git.canutethegreat.com/CanuteTheGreat/dns-hygiene-checker.git@v1.3.1  # a pinned release
+pipx install git+https://git.canutethegreat.com/CanuteTheGreat/dns-hygiene-checker.git@v2.0.0  # a pinned release
 brew install canutethegreat/errant-tools/dns-hygiene-checker   # after: brew tap canutethegreat/errant-tools https://git.canutethegreat.com/CanuteTheGreat/homebrew-errant-tools
 scoop install errant-tools/dns-hygiene-checker                 # after: scoop bucket add errant-tools https://git.canutethegreat.com/CanuteTheGreat/scoop-errant-tools
 ```
@@ -44,6 +44,7 @@ dns-hygiene-checker example.com --ct                        # + every name seen 
 dns-hygiene-checker example.com --zone-file example.com.zone # + every name in a BIND zone file / export
 CLOUDFLARE_API_TOKEN=... dns-hygiene-checker example.com --cloudflare --only-discovered
 dns-hygiene-checker example.com --json
+dns-hygiene-checker example.com --quiet                     # exit code only
 dns-hygiene-checker example.com --doh-url https://dns.google/resolve
 ```
 
@@ -54,9 +55,7 @@ zone file; `--cloudflare` lists every record in the domain's Cloudflare zone (to
 Zone:DNS:Read in `CLOUDFLARE_API_TOKEN`). `--only-discovered` drops the built-in list.
 
 `--doh-url` picks any DNS-over-HTTPS endpoint that speaks the JSON API (default:
-Cloudflare's). Exit codes: `0` no FAIL findings, `1` at least one FAIL (takeover
-risk), `2` the resolver or a discovery source couldn't be queried, so the report is
-incomplete. Python 3.7+.
+Cloudflare's). `--quiet` (`-q`) prints nothing on stdout. Python 3.7+.
 
 What it flags:
 - CNAME whose target doesn't resolve (WARN; FAIL when the target is one of 60 claimable
@@ -84,6 +83,26 @@ What it flags:
 - **DNSSEC**: no DS record at the parent (WARN); signed and validated (OK)
 
 `--no-apex-checks` skips the MX/SRV/CAA/DNSSEC checks.
+
+## Exit codes and JSON output
+
+The tool follows the Errant Solutions CLI contract ([docs/CLI-CONTRACT.md](docs/CLI-CONTRACT.md)):
+
+Exit codes: `0` no FAIL findings, `1` at least one FAIL (takeover risk), `2` legacy: the
+resolver or a discovery source couldn't be queried (or bad arguments), `3` unexpected internal error.
+
+| Code | Meaning |
+|------|---------|
+| 0 | No FAIL findings (clean). |
+| 1 | At least one FAIL finding (takeover risk). |
+| 2 | Legacy: the resolver or a discovery source (CT, zone file, Cloudflare) couldn't be queried, so the report is incomplete (only when there is no FAIL finding; FAIL wins). Also bad arguments (usage error). |
+| 3 | Unexpected internal error (message on stderr, never a traceback). |
+
+`--json` prints exactly one JSON object: `schema_version` (1), `tool`, `version`, `exit_code` and
+`results` (domain -> list of findings with `name`, `level`, `message`). Before 2.0.0 the top level was
+the domain map itself; it is now under `results` (breaking change, hence 2.0.0). The JSON Schema is
+[schema/dns-hygiene-checker.schema.json](schema/dns-hygiene-checker.schema.json).
+`--quiet` (`-q`) prints nothing on stdout (no report, no JSON); the exit code and errors on stderr remain.
 
 ## Example output
 

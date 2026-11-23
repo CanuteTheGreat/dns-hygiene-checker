@@ -46,9 +46,12 @@ Usage:
     dns-hygiene-checker example.com --doh-url https://dns.google/resolve
 
 Exit codes: 0 = no FAIL findings, 1 = at least one FAIL (takeover risk),
-2 = the DNS-over-HTTPS resolver could not be queried (report incomplete).
+2 = the DNS-over-HTTPS resolver or a discovery source could not be queried (report
+incomplete; legacy code, kept) and also bad arguments, 3 = unexpected internal error.
+--json prints one object: schema_version, tool, version, exit_code, results
+({domain: [findings]}); --quiet prints nothing on stdout.
 """
-__version__ = "1.3.1"
+__version__ = "2.0.0"
 
 import argparse
 import json
@@ -636,6 +639,15 @@ def discover_cloudflare(domain):
 
 
 def main(argv=None):
+    """Run the CLI; an unexpected exception is exit 3 with a message on stderr, never a traceback."""
+    try:
+        return _main(argv)
+    except Exception as e:  # noqa: BLE001 - contract: never exit 1 through a traceback
+        print("dns-hygiene-checker: unexpected error: %s: %s" % (type(e).__name__, e), file=sys.stderr)
+        return 3
+
+
+def _main(argv=None):
     global DOH_URL, CT_URL, CERTSPOTTER_URL, CLOUDFLARE_API
     parser = argparse.ArgumentParser(prog="dns-hygiene-checker", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version="%(prog)s " + __version__)
@@ -643,6 +655,7 @@ def main(argv=None):
     parser.add_argument("--subdomains", help="comma-separated list of subdomains to check "
                                               "instead of the built-in common list")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    parser.add_argument("-q", "--quiet", action="store_true", help="print nothing on stdout (only the exit code and errors on stderr)")
     parser.add_argument("--doh-url", default=DOH_URL,
                         help="DNS-over-HTTPS JSON endpoint to query (default: %(default)s; "
                              "e.g. https://dns.google/resolve)")
@@ -687,21 +700,22 @@ def main(argv=None):
             except (RuntimeError, OSError, ValueError) as e:
                 RESOLVER_FAILURES.append(f"{label} discovery: {e}")
         subs = list(dict.fromkeys(base + [d for d in discovered if d]))
-        findings = notes + audit(domain, subs, quiet=args.json, apex_checks=not args.no_apex_checks, notes=notes)
+        findings = notes + audit(domain, subs, quiet=args.json or args.quiet, apex_checks=not args.no_apex_checks, notes=notes)
         if RESOLVER_FAILURES:
             resolver_failed = True
             msg = (f"{len(RESOLVER_FAILURES)} lookup(s) failed (DNS via {DOH_URL} or discovery), so this "
                    f"report is INCOMPLETE (first: {RESOLVER_FAILURES[0]})")
             findings.insert(0, (domain, "ERROR", msg))
-            if not args.json:
+            if not (args.json or args.quiet):
                 print(f"  [ERROR] {domain}: {msg}")
         all_results[domain] = [{"name": n, "level": l, "message": m} for n, l, m in findings]
 
-    if args.json:
-        print(json.dumps(all_results, indent=2))
-
     has_fail = any(f["level"] == "FAIL" for res in all_results.values() for f in res)
-    return 1 if has_fail else (2 if resolver_failed else 0)
+    code = 1 if has_fail else (2 if resolver_failed else 0)
+    if args.json and not args.quiet:
+        print(json.dumps({"schema_version": 1, "tool": "dns-hygiene-checker", "version": __version__,
+                          "exit_code": code, "results": all_results}, indent=2))
+    return code
 
 
 if __name__ == "__main__":

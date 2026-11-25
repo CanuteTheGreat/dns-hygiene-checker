@@ -173,5 +173,233 @@ class TestQuiet(unittest.TestCase):
         self.assertTrue(out)
 
 
+class TestMainWrapperInProcess(unittest.TestCase):
+    """main() is the exit-3 safety net around _main(). Called in-process (not through a child
+    python) so the mutation run, which only sees calls made in the test process, covers it."""
+
+    def run_main(self, argv, exc):
+        import contextlib
+        import io
+        sys.path.insert(0, ROOT)
+        import dns_hygiene_checker as m
+
+        def boom(*a, **k):
+            raise exc
+
+        out, err = io.StringIO(), io.StringIO()
+        old = m.audit
+        m.audit = boom
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = m.main(argv)
+        finally:
+            m.audit = old
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_unexpected_error_is_exit_3_with_exact_stderr_line(self):
+        rc, out, err = self.run_main(["clean.test"], KeyError("kaboom"))
+        self.assertEqual(rc, 3)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "dns-hygiene-checker: unexpected error: KeyError: 'kaboom'\n")
+
+    def test_error_text_uses_type_name_and_message(self):
+        rc, out, err = self.run_main(["clean.test", "--json"], ValueError("bad thing"))
+        self.assertEqual((rc, out), (3, ""))
+        self.assertEqual(err, "dns-hygiene-checker: unexpected error: ValueError: bad thing\n")
+
+    def test_quiet_does_not_hide_the_error_on_stderr(self):
+        rc, out, err = self.run_main(["clean.test", "--quiet"], RuntimeError("x"))
+        self.assertEqual((rc, out), (3, ""))
+        self.assertEqual(err, "dns-hygiene-checker: unexpected error: RuntimeError: x\n")
+
+    def test_argv_is_passed_through(self):
+        # argv=None would fall back to sys.argv (pytest's own args) and exit 2 via argparse
+        import dns_hygiene_checker as m  # noqa: F401
+        with self.assertRaises(SystemExit) as cm:
+            self.run_main(["--no-such-flag"], KeyError("never reached"))
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_non_exception_exits_are_not_swallowed(self):
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_main(["clean.test"], KeyboardInterrupt())
+        with self.assertRaises(SystemExit) as cm:
+            self.run_main(["clean.test"], SystemExit(7))
+        self.assertEqual(cm.exception.code, 7)
+
+    def test_success_returns_the_code_unchanged(self):
+        import contextlib
+        import io
+        import dns_hygiene_checker as m
+        old = m._main
+        m._main = lambda argv=None: 41
+        try:
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(m.main(["x"]), 41)
+            self.assertEqual(err.getvalue(), "")
+        finally:
+            m._main = old
+
+
+def squash(text):
+    return " ".join(text.split())
+
+
+HELP_USAGE = ("usage: dns-hygiene-checker [-h] [--version] [--subdomains SUBDOMAINS] [--json] [-q] "
+              "[--doh-url DOH_URL] [--ct] [--zone-file FILE] [--cloudflare] [--only-discovered] "
+              "[--no-apex-checks] domains [domains ...]")
+HELP_OPTIONS = """positional arguments:
+  domains               domain(s) to check, e.g. example.com
+  -h, --help            show this help message and exit
+  --version             show program's version number and exit
+  --subdomains SUBDOMAINS
+                        comma-separated list of subdomains to check instead of
+                        the built-in common list
+  --json                emit JSON instead of text
+  -q, --quiet           print nothing on stdout (only the exit code and errors
+                        on stderr)
+  --doh-url DOH_URL     DNS-over-HTTPS JSON endpoint to query (default:
+                        https://cloudflare-dns.com/dns-query; e.g.
+                        https://dns.google/resolve)
+  --ct                  also check every subdomain found in Certificate
+                        Transparency logs (crt.sh, Cert Spotter)
+  --zone-file FILE      also check every name in this BIND-style zone file
+  --cloudflare          also check every record in the domain's Cloudflare
+                        zone (CLOUDFLARE_API_TOKEN)
+  --only-discovered     skip the built-in/--subdomains list; check only
+                        discovered names
+  --no-apex-checks      skip the MX/SRV/CAA/DNSSEC checks"""
+
+
+class TestHelpBody(unittest.TestCase):
+    def test_whole_help_body(self):
+        # the whole --help text (usage, description, every option and its help/metavar), with the
+        # 'options:' / 'optional arguments:' title (differs across Pythons) dropped
+        rc, out, err = cs.run_cli(TOOL, ["--help"], env={"COLUMNS": "80"})
+        self.assertEqual((rc, err), (0, ""))
+        sys.path.insert(0, ROOT)
+        import dns_hygiene_checker as m
+        body = squash(out.replace("optional arguments:", "").replace("options:", ""))
+        want = squash("%s %s %s" % (HELP_USAGE, m.__doc__, HELP_OPTIONS.replace("options:", "")))
+        self.assertEqual(body, want)
+
+    def test_hidden_test_hooks_stay_hidden_but_parse(self):
+        rc, out, err = cs.run_cli(TOOL, ["--help"], env={"COLUMNS": "80"})
+        for hook in ("--ct-url", "--certspotter-url", "--cloudflare-api"):
+            self.assertNotIn(hook, out)
+
+
+class TestMainInProcessBehaviour(unittest.TestCase):
+    """_main() driven in-process with audit()/discover_*() stubbed: what it passes down, what it keeps."""
+
+    def setUp(self):
+        sys.path.insert(0, ROOT)
+        import dns_hygiene_checker as m
+        self.m = m
+        self.saved = (m.audit, m.discover_ct, m.discover_zone_file, m.discover_cloudflare,
+                      m.DOH_URL, m.CT_URL, m.CERTSPOTTER_URL, m.CLOUDFLARE_API)
+        self.calls = []
+
+        def fake_audit(domain, subs, **kw):
+            self.calls.append((domain, list(subs), kw))
+            return []
+
+        m.audit = fake_audit
+
+    def tearDown(self):
+        m = self.m
+        (m.audit, m.discover_ct, m.discover_zone_file, m.discover_cloudflare,
+         m.DOH_URL, m.CT_URL, m.CERTSPOTTER_URL, m.CLOUDFLARE_API) = self.saved
+
+    def main(self, argv):
+        import contextlib
+        import io
+        out, err = io.StringIO(), io.StringIO()
+        self.err = err
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = self.m.main(argv)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_endpoint_defaults_are_kept_when_no_flag_is_given(self):
+        m = self.m
+        want = (m.DOH_URL, m.CT_URL, m.CERTSPOTTER_URL, m.CLOUDFLARE_API)
+        self.assertTrue(all(isinstance(v, str) and v for v in want), want)
+        self.assertEqual(self.main(["clean.test", "--subdomains", "www"])[0], 0)
+        self.assertEqual((m.DOH_URL, m.CT_URL, m.CERTSPOTTER_URL, m.CLOUDFLARE_API), want)
+
+    def test_endpoint_flags_override_the_globals(self):
+        m = self.m
+        self.main(["clean.test", "--subdomains", "www", "--doh-url", "http://d/x", "--ct-url", "http://c/",
+                   "--certspotter-url", "http://s/", "--cloudflare-api", "http://f/"])
+        self.assertEqual((m.DOH_URL, m.CT_URL, m.CERTSPOTTER_URL, m.CLOUDFLARE_API),
+                         ("http://d/x", "http://c/", "http://s/", "http://f/"))
+
+    def test_domain_is_normalised_before_audit(self):
+        rc, out, err = self.main(["https://Clean.Test/", "http://Hyg.Test//", "  plain.test  ", "HTTP://x.test",
+                                  "--subdomains", "www"])
+        self.assertEqual([c[0] for c in self.calls], ["clean.test", "hyg.test", "plain.test", "http://x.test"])
+
+    def test_only_trailing_slashes_are_stripped(self):
+        # a name ending in a capital X must keep it (only "/" is stripped, then the name is lower-cased)
+        self.main(["https://Hyg.TestX//", "--subdomains", "www"])
+        self.assertEqual(self.calls[0][0], "hyg.testx")
+
+    def test_only_discovered_without_source_error_text_is_exact(self):
+        with self.assertRaises(SystemExit) as cm:
+            self.main(["z.test", "--only-discovered"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertTrue(self.err.getvalue().endswith(
+            "dns-hygiene-checker: error: --only-discovered needs --ct, --zone-file or --cloudflare\n"),
+            self.err.getvalue())
+
+    def test_only_discovered_skips_the_builtin_list(self):
+        m = self.m
+        m.discover_zone_file = lambda path, domain: ["a", "b"]
+        self.main(["z.test", "--only-discovered", "--zone-file", "ignored"])
+        self.assertEqual(self.calls[0][1], ["a", "b"])
+        del self.calls[:]
+        self.main(["z.test", "--zone-file", "ignored", "--subdomains", "x, y"])
+        self.assertEqual(self.calls[0][1], ["x", "y", "a", "b"])
+        del self.calls[:]
+        self.main(["z.test", "--zone-file", "ignored"])
+        self.assertEqual(self.calls[0][1][-2:], ["a", "b"])
+        self.assertGreater(len(self.calls[0][1]), 10)
+
+    def test_ct_discovery_failure_names_the_source(self):
+        m = self.m
+
+        def boom(domain):
+            raise RuntimeError("crt.sh down")
+
+        m.discover_ct = boom
+        rc, out, err = self.main(["z.test", "--ct", "--subdomains", "www", "--json"])
+        self.assertEqual(rc, 2)
+        msg = json.loads(out)["results"]["z.test"][0]["message"]
+        self.assertIn("(first: CT discovery: crt.sh down)", msg)
+
+    def test_zone_file_and_cloudflare_failure_labels(self):
+        m = self.m
+
+        def boom(*a):
+            raise OSError("nope")
+
+        m.discover_zone_file = boom
+        m.discover_cloudflare = boom
+        rc, out, err = self.main(["z.test", "--zone-file", "f", "--cloudflare", "--subdomains", "www", "--json"])
+        msg = json.loads(out)["results"]["z.test"][0]["message"]
+        self.assertIn("2 lookup(s) failed", msg)
+        self.assertIn("(first: zone file discovery: nope)", msg)
+        self.assertEqual(self.m.RESOLVER_FAILURES[1], "Cloudflare discovery: nope")
+
+    def test_discovery_notes_use_the_source_label(self):
+        m = self.m
+        m.discover_ct = lambda domain: (["a", "b"], "crt.sh")
+        m.discover_zone_file = lambda path, domain: ["c"]
+        m.discover_cloudflare = lambda domain: []
+        rc, out, err = self.main(["z.test", "--ct", "--zone-file", "f", "--cloudflare", "--subdomains", "www", "--json"])
+        msgs = [f["message"] for f in json.loads(out)["results"]["z.test"]]
+        self.assertEqual(msgs[:3], ["crt.sh: 2 subdomain name(s) discovered", "zone file: 1 subdomain name(s) discovered",
+                                    "Cloudflare: 0 subdomain name(s) discovered"])
+
+
 if __name__ == "__main__":
     unittest.main()
